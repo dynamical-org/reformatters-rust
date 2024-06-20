@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use clap::Parser;
 use futures::future::join_all;
 use futures::stream;
 use futures::{StreamExt, TryStreamExt};
@@ -8,6 +9,9 @@ use itertools::Itertools;
 use ndarray::{s, Array2, Array3, Axis};
 use object_store::aws::AmazonS3Builder;
 use object_store::ObjectStore;
+use reformatters::gfs;
+use reformatters::AnalysisDataset;
+use reformatters::AnalysisRunConfig;
 use regex::Regex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
@@ -28,8 +32,28 @@ const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.0.zarr";
 type E = f32;
 const VARIABLE_LEVEL: &str = "VGRD:10 m above ground";
 
+#[derive(clap::Parser, Debug)]
+struct Cli {
+    /// Data variable name to ingest
+    variable: String,
+
+    /// Earliest timestamp to ingest
+    start_time: DateTime<Utc>,
+
+    /// Most recent timestamp to ingest (inclusive)
+    end_time: DateTime<Utc>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let f: u32 = (0..100).len().try_into()?;
+
+    let cli = Cli::try_parse()?;
+
+    let dataset = &gfs::GFS_DATASET;
+    let _run_config = get_run_config(dataset, cli.variable, cli.start_time, cli.end_time);
+    // TODO use run config
+
     let start = Instant::now();
 
     let dataset_start_date = Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap();
@@ -72,6 +96,49 @@ async fn main() -> Result<()> {
     print_report(results, start.elapsed());
 
     Ok(())
+}
+
+fn get_run_config(
+    dataset: &AnalysisDataset,
+    data_variable_name: String,
+    time_start: DateTime<Utc>,
+    time_end: DateTime<Utc>,
+) -> Result<AnalysisRunConfig> {
+    if !dataset
+        .data_variable_names
+        .contains(&data_variable_name.as_str())
+    {
+        return Err(anyhow!("Variable name {data_variable_name} not supported."));
+    }
+
+    if time_start < dataset.time_start {
+        return Err(anyhow!(
+            "Start time {time_start} is before dataset time {}",
+            dataset.time_start
+        ));
+    }
+
+    let now = Utc::now();
+    if now < time_end {
+        return Err(anyhow!("End time {time_end} is before now ({now})"));
+    }
+
+    let time_coordinates = (0..i32::MAX)
+        .scan(time_start, |time, _| {
+            *time += dataset.time_step;
+            if *time <= time_end {
+                Some(*time)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(AnalysisRunConfig {
+        dataset: dataset.clone(),
+        data_variable_name,
+        time_coordinates,
+    })
 }
 
 #[allow(clippy::cast_precision_loss)]
