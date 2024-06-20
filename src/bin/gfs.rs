@@ -46,8 +46,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let f: u32 = (0..100).len().try_into()?;
-
     let cli = Cli::try_parse()?;
 
     let dataset = &gfs::GFS_DATASET;
@@ -123,7 +121,7 @@ fn get_run_config(
         return Err(anyhow!("End time {time_end} is before now ({now})"));
     }
 
-    let time_coordinates = (0..i32::MAX)
+    let time_coordinates = (0..u32::MAX)
         .scan(time_start, |time, _| {
             *time += dataset.time_step;
             if *time <= time_end {
