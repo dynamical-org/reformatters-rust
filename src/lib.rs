@@ -1,4 +1,5 @@
 pub mod gfs;
+pub mod http;
 
 use chrono::{DateTime, TimeDelta, Utc};
 
@@ -25,26 +26,3 @@ pub struct AnalysisDataset {
     pub dimension_names: Vec<&'static str>,
     pub data_variable_names: Vec<&'static str>,
 }
-
-#[derive(Debug)]
-pub struct AnalysisRunConfig {
-    pub dataset: AnalysisDataset,
-    pub data_variable_name: String,
-    pub time_coordinates: Vec<DateTime<Utc>>,
-}
-
-// pub struct DatasetDimension<Coordinate, Frequency> {
-//     name: &'static str,
-//     coordinate_start: Coordinate,
-//     coordinate_end: Coordinate,
-//     coordinate_frequency: Frequency,
-//     chunk_size: usize,
-// }
-// pub type DateTimeDimension = DatasetDimension<DateTime<Utc>, TimeDelta>;
-// pub type TimeDeltaDimension = DatasetDimension<TimeDelta, TimeDelta>;
-// pub type FloatDimension = DatasetDimension<f64, f64>;
-
-// struct SurfaceLonLatAnalysisDataset {
-//     id: &'static str,
-//     dimensions: (DateTimeDimension, FloatDimension, FloatDimension),
-// }
