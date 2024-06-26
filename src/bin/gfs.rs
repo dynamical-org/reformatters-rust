@@ -10,8 +10,6 @@ use reformatters::gfs;
 use reformatters::http;
 use reformatters::AnalysisDataset;
 use reformatters::AnalysisRunConfig;
-use std::cmp::min;
-use std::mem::size_of_val;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -73,49 +71,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_run_config(
-    dataset: &AnalysisDataset,
-    data_variable_name: String,
-    time_start: DateTime<Utc>,
-    time_end: DateTime<Utc>,
-) -> Result<AnalysisRunConfig> {
-    if !dataset
-        .data_variable_names
-        .contains(&data_variable_name.as_str())
-    {
-        return Err(anyhow!("Variable name {data_variable_name} not supported."));
-    }
-
-    if time_start < dataset.time_start {
-        return Err(anyhow!(
-            "Start time {time_start} is before dataset time {}",
-            dataset.time_start
-        ));
-    }
-
-    let now = Utc::now();
-    if now < time_end {
-        return Err(anyhow!("End time {time_end} is before now ({now})"));
-    }
-
-    let time_coordinates = (0..u32::MAX)
-        .scan(time_start - dataset.time_step, |time, _| {
-            *time += dataset.time_step;
-            if *time < time_end {
-                Some(*time)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(AnalysisRunConfig {
-        dataset: dataset.clone(),
-        data_variable_name,
-        time_coordinates,
-    })
-}
-
 #[allow(clippy::cast_precision_loss)]
 fn print_report(results: Vec<(usize, usize)>, elapsed: Duration) {
     let num_chunks = results.len();
@@ -140,80 +95,6 @@ fn print_report(results: Vec<(usize, usize)>, elapsed: Duration) {
     );
 
     println!("\n{elapsed:?} elapsed");
-}
-
-async fn upload_chunk(
-    chunk_idx: ChunkIdx3,
-    data: Vec<u8>,
-    store: ObjStore,
-) -> Result<object_store::PutResult> {
-    let variable_name = VARIABLE_LEVEL.replace([':', ' '], "_");
-    let chunk_idx_name = chunk_idx.into_iter().join(".");
-    let chunk_path = format!("{DEST_ROOT_PATH}/{variable_name}/{chunk_idx_name}");
-
-    let bytes: object_store::PutPayload = data.into();
-
-    let s = Instant::now();
-
-    let mut res = Err(anyhow!("Never attempted to put object"));
-    for retry_i in 0..16 {
-        match store.put(&chunk_path.clone().into(), bytes.clone()).await {
-            Ok(r) => {
-                println!(
-                    "Uploaded {:?} in {:.2?} ({:?} mb)",
-                    &chunk_idx,
-                    s.elapsed(),
-                    bytes.content_length() / 10_usize.pow(6)
-                );
-                return Ok(r);
-            }
-            Err(e) => {
-                println!(
-                    "upload err - retry i: {:?}, chunk {:?}",
-                    retry_i, &chunk_idx
-                );
-                tokio::time::sleep(Duration::from_secs_f32(
-                    8_f32.min(2_f32.powf(retry_i as f32)),
-                ))
-                .await;
-                res = Err(anyhow!(e));
-            }
-        }
-    }
-    res
-}
-
-fn compress_chunk(chunk_idx: ChunkIdx3, array: &Array3<E>) -> (ChunkIdx3, Vec<u8>, usize, usize) {
-    let array_slice = array
-        .as_slice()
-        .expect("TODO handle non default memory ordering");
-    let uncompressed_length = size_of_val(array_slice);
-    let element_size = size_of_val(&array_slice[0]);
-
-    let context = blosc::Context::new()
-        .compressor(blosc::Compressor::Zstd)
-        .unwrap()
-        .typesize(Some(element_size))
-        .clevel(blosc::Clevel::L5)
-        .shuffle(blosc::ShuffleMode::Byte);
-
-    let compressed: Vec<u8> = context.compress(array_slice).into();
-    let compressed_length = compressed.len();
-
-    (
-        chunk_idx,
-        compressed,
-        uncompressed_length,
-        compressed_length,
-    )
-}
-
-#[derive(Default, Debug, Copy, Clone)]
-struct Job {
-    i: usize,
-    start_date: DateTime<Utc>,
-    end_date: DateTime<Utc>,
-    init_freq: TimeDelta,
 }
 
 fn output_store() -> Result<ObjStore> {

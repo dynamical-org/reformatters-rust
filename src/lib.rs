@@ -26,3 +26,12 @@ pub struct AnalysisDataset {
     pub dimension_names: Vec<&'static str>,
     pub data_variable_names: Vec<&'static str>,
 }
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn num_chunks(size: usize, chunk_size: usize) -> usize {
+    ((size as f64) / (chunk_size as f64)).ceil() as usize
+}
