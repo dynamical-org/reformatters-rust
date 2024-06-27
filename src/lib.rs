@@ -1,5 +1,6 @@
 pub mod gfs;
 pub mod http;
+pub mod object_storage;
 
 use chrono::{DateTime, TimeDelta, Utc};
 

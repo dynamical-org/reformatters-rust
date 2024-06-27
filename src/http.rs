@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub type HttpClient = ClientWithMiddleware;
 
-fn client() -> Result<HttpClient> {
+pub fn client() -> Result<HttpClient> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(45))
         .connect_timeout(Duration::from_secs(5))

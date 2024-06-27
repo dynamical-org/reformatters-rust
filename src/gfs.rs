@@ -1,22 +1,29 @@
 use std::mem::size_of_val;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
+use crate::http::{self, HttpClient};
+use crate::num_chunks;
+use crate::object_storage::{self, ObjectStore, PutResult};
 use crate::AnalysisDataset;
-use crate::{http::HttpClient, num_chunks};
 
 pub use anyhow::{anyhow, Result};
+use backon::ExponentialBuilder;
+use backon::Retryable;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use futures::future::join_all;
+use futures::future::{self, join_all};
+use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use itertools::Itertools;
 use ndarray::{s, Array2, Array3, Axis};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::task::spawn_blocking;
+use tokio::time::error::Elapsed;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.0.zarr";
+const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.1.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -61,6 +68,38 @@ static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     ])
 });
 
+async fn reformat(
+    data_variable_name: String,
+    time_start: DateTime<Utc>,
+    time_end: DateTime<Utc>,
+    future_buffer_base: usize,
+) -> Result<()> {
+    let start = Instant::now();
+
+    let run_config = get_run_config(&GFS_DATASET, data_variable_name, time_start, time_end)?;
+    let download_batches = run_config.get_download_batches()?;
+
+    let http_client = http::client()?;
+    let output_store = object_storage::output_store()?;
+
+    let results = futures::stream::iter(download_batches)
+        .map(|download_batch| download_batch.process(http_client))
+        .buffer_unordered(future_buffer_base)
+        .map(DownloadedBatch::zarr_array_chunks)
+        .buffer_unordered(future_buffer_base * 8)
+        .flat_map(futures::stream::iter)
+        .map(ZarrChunkArray::compress)
+        .buffer_unordered(future_buffer_base * 8)
+        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store))
+        .buffer_unordered(future_buffer_base * 2)
+        .collect::<Vec<_>>()
+        .await;
+
+    print_report(results, start.elapsed());
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisRunConfig {
     pub dataset: AnalysisDataset,
@@ -104,6 +143,20 @@ pub struct ZarrChunkCompressed {
     bytes: Vec<u8>,
     uncompressed_length: usize,
     compressed_length: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ZarrChunkUploadInfo {
+    run_config: AnalysisRunConfig,
+    data_variable_name: String,
+    time_chunk_index: usize,
+    longitude_chunk_index: usize,
+    latitude_chunk_index: usize,
+    uncompressed_mb: f64,
+    compressed_mb: f64,
+    upload_time: Duration,
+    e_tag: Option<String>,
+    object_version: Option<String>,
 }
 
 fn get_run_config(
@@ -377,40 +430,72 @@ impl ZarrChunkArray {
 }
 
 impl ZarrChunkCompressed {
-    async fn upload_chunk(&self, store: ObjStore) -> Result<object_store::PutResult> {
-        let variable_name = VARIABLE_LEVEL.replace([':', ' '], "_");
-        let chunk_idx_name = chunk_idx.into_iter().join(".");
-        let chunk_path = format!("{DEST_ROOT_PATH}/{variable_name}/{chunk_idx_name}");
+    async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
+        assert!(self.run_config.dataset.dimension_names == vec!["time", "longitude", "latitude"]);
+        let chunk_index_name = format!(
+            "{}.{}.{}",
+            self.time_chunk_index, self.longitude_chunk_index, self.latitude_chunk_index
+        );
+        let chunk_path = format!(
+            "{DEST_ROOT_PATH}/{}/{chunk_index_name}",
+            self.data_variable_name,
+        );
 
-        let bytes: object_store::PutPayload = data.into();
+        let bytes: object_store::PutPayload = self.bytes.into();
 
-        let s = Instant::now();
+        let upload_start_time = Instant::now();
 
-        let mut res = Err(anyhow!("Never attempted to put object"));
-        for retry_i in 0..16 {
-            match store.put(&chunk_path.clone().into(), bytes.clone()).await {
-                Ok(r) => {
-                    println!(
-                        "Uploaded {:?} in {:.2?} ({:?} mb)",
-                        &chunk_idx,
-                        s.elapsed(),
-                        bytes.content_length() / 10_usize.pow(6)
-                    );
-                    return Ok(r);
-                }
-                Err(e) => {
-                    println!(
-                        "upload err - retry i: {:?}, chunk {:?}",
-                        retry_i, &chunk_idx
-                    );
-                    tokio::time::sleep(Duration::from_secs_f32(
-                        8_f32.min(2_f32.powf(retry_i as f32)),
-                    ))
-                    .await;
-                    res = Err(anyhow!(e));
-                }
-            }
-        }
-        res
+        let put_result = (|| async { store.put(&chunk_path.clone().into(), bytes.clone()).await })
+            .retry(&ExponentialBuilder::default())
+            .await
+            .inspect_err(|e| println!("Upload error, chunk {chunk_index_name}, {e}"))?;
+
+        let upload_time = upload_start_time.elapsed();
+
+        println!(
+            "Uploaded {chunk_index_name} in {upload_time:.2?} ({:?} mb)",
+            bytes.content_length() / 10_usize.pow(6)
+        );
+
+        Ok(ZarrChunkUploadInfo {
+            run_config: self.run_config,
+            data_variable_name: self.data_variable_name.clone(),
+            time_chunk_index: self.time_chunk_index,
+            longitude_chunk_index: self.longitude_chunk_index,
+            latitude_chunk_index: self.latitude_chunk_index,
+            uncompressed_mb: self.uncompressed_length as f64 / 10_f64.powf(6_f64),
+            compressed_mb: self.compressed_length as f64 / 10_f64.powf(6_f64),
+            upload_time,
+            e_tag: put_result.e_tag,
+            object_version: put_result.version,
+        })
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn print_report(results: Vec<ZarrChunkUploadInfo>, elapsed: Duration) {
+    let num_chunks = results.len();
+
+    let (uncompressed_mbs, compressed_mbs): (Vec<f64>, Vec<f64>) = results
+        .into_iter()
+        .map(|info| (info.uncompressed_mb, info.compressed_mb))
+        .collect();
+
+    let uncompressed_total_mb = uncompressed_mbs.iter().sum::<f64>();
+    let compressed_total_mb = compressed_mbs.iter().sum::<f64>();
+    let avg_compression_ratio = compressed_total_mb / uncompressed_total_mb;
+
+    let avg_uncompressed_chunk_mb = uncompressed_total_mb / num_chunks as f64;
+    let avg_compressed_chunk_mb = compressed_total_mb / num_chunks as f64;
+
+    println!("\nTotals");
+    println!("{uncompressed_total_mb} MB uncompressed, {compressed_total_mb} MB compressed");
+    println!("{avg_compression_ratio:.2} average compression ratio");
+
+    println!("\nChunks, n = {num_chunks}");
+    println!(
+        "{avg_uncompressed_chunk_mb} MB uncompressed, {avg_compressed_chunk_mb} MB compressed"
+    );
+
+    println!("\n{elapsed:?} elapsed");
 }

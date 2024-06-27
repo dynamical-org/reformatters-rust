@@ -4,17 +4,13 @@ use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use clap::Parser;
 use futures::stream;
 use itertools::Itertools;
-use object_store::aws::AmazonS3Builder;
-use object_store::ObjectStore;
 use reformatters::gfs;
 use reformatters::http;
 use reformatters::AnalysisDataset;
 use reformatters::AnalysisRunConfig;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-type ObjStore = Arc<dyn ObjectStore>;
 type ChunkIdx3 = [usize; 3];
 
 #[derive(clap::Parser, Debug)]
@@ -95,23 +91,4 @@ fn print_report(results: Vec<(usize, usize)>, elapsed: Duration) {
     );
 
     println!("\n{elapsed:?} elapsed");
-}
-
-fn output_store() -> Result<ObjStore> {
-    let mut store_builder = AmazonS3Builder::from_env()
-        .with_access_key_id(std::env::var("OUTPUT_STORE_ACCESS_KEY_ID")?)
-        .with_secret_access_key(std::env::var("OUTPUT_STORE_SECRET_ACCESS_KEY")?);
-
-    if let Ok(bucket) = std::env::var("OUTPUT_STORE_BUCKET") {
-        store_builder = store_builder.with_bucket_name(bucket);
-    }
-    if let Ok(endpoint) = std::env::var("OUTPUT_STORE_ENDPOINT") {
-        store_builder = store_builder.with_endpoint(endpoint);
-    }
-    if let Ok(region) = std::env::var("OUTPUT_STORE_REGION") {
-        store_builder = store_builder.with_region(region);
-    }
-
-    let store = store_builder.build()?;
-    Ok(Arc::new(store))
 }
