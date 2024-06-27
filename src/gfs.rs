@@ -22,7 +22,7 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.1.zarr";
+const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.1-beta1.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -494,13 +494,17 @@ fn print_report(results: Vec<Result<ZarrChunkUploadInfo>>, elapsed: Duration) {
     let avg_compressed_chunk_mb = compressed_total_mb / num_chunks as f64;
 
     println!("\nTotals");
-    println!("{uncompressed_total_mb} MB uncompressed, {compressed_total_mb} MB compressed");
+    println!(
+        "{:.2} GB uncompressed, {:.2} GB compressed",
+        uncompressed_total_mb / 1e3,
+        compressed_total_mb / 1e3
+    );
     println!("{avg_compression_ratio:.2} average compression ratio");
 
     println!("\nChunks, n = {num_chunks}");
     println!(
-        "{avg_uncompressed_chunk_mb} MB uncompressed, {avg_compressed_chunk_mb} MB compressed"
+        "Average {avg_uncompressed_chunk_mb:.2} MB uncompressed, {avg_compressed_chunk_mb:.2} MB compressed"
     );
 
-    println!("\n{elapsed:?} elapsed");
+    println!("\n{elapsed:.2?} elapsed");
 }
