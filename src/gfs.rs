@@ -34,7 +34,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     id: "noaa-gfs-analysis",
     name: "NOAA GFS Analysis",
 
-    time_start: Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap(),
+    time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: None,
     time_step: TimeDelta::try_hours(6).unwrap(),
     time_chunk_size: 40,
@@ -270,6 +270,36 @@ async fn load_variable_from_file(
     init_time: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<Array2<E>> {
+    let file_path = if init_time < Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap() {
+        let local_data_dir = std::env::var("LOCAL_DATA_DIR")?;
+        let datetime_str = init_time.format("%Y%m%d%H");
+        format!("{local_data_dir}/{data_variable_name}/gfs.0p25.{datetime_str}.f000.grib2")
+    } else {
+        download_band(data_variable_name, init_time, http_client).await?
+    };
+    println!("{}", &file_path);
+
+    let file_path_move = file_path.clone();
+    let array = spawn_blocking(move || -> Result<Array2<E>> {
+        let dataset = gdal::Dataset::open(file_path_move)?;
+        let band = dataset.rasterband(1)?;
+        let array = band.read_as_array::<E>((0, 0), band.size(), band.size(), None)?;
+        Ok(array)
+    })
+    .await??;
+
+    if file_path.starts_with("/tmp/") {
+        tokio::fs::remove_file(file_path).await?;
+    }
+
+    Ok(array)
+}
+
+async fn download_band(
+    data_variable_name: &str,
+    init_time: DateTime<Utc>,
+    http_client: http::Client,
+) -> Result<String> {
     let (init_date, init_hour) = (init_time.format("%Y%m%d"), init_time.format("%H"));
 
     // `atmos` and `wave` directories were added to the path starting 2021-03-23T00Z
@@ -333,18 +363,7 @@ async fn load_variable_from_file(
 
     tokio::io::copy(&mut data_stream, &mut file).await?;
 
-    let file_path_move = file_path.clone();
-    let array = spawn_blocking(move || -> Result<Array2<E>> {
-        let dataset = gdal::Dataset::open(file_path_move)?;
-        let band = dataset.rasterband(1)?;
-        let array = band.read_as_array::<E>((0, 0), band.size(), band.size(), None)?;
-        Ok(array)
-    })
-    .await??;
-
-    tokio::fs::remove_file(file_path).await?;
-
-    Ok(array)
+    Ok(file_path)
 }
 
 impl DownloadedBatch {

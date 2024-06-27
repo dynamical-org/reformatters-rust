@@ -13,6 +13,8 @@ struct Cli {
     /// Most recent timestamp to ingest (inclusive)
     time_end: DateTime<Utc>,
 
+    /// Performance tuning option to control the number of futures to buffer at any step.
+    /// Defaults to 3, use a larger number on machines with more resources.
     future_buffer_base_size: Option<usize>,
 }
 
