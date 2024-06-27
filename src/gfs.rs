@@ -3,16 +3,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
-use crate::http::{self, HttpClient};
+use crate::http;
 use crate::num_chunks;
-use crate::object_storage::{self, ObjectStore, PutResult};
+use crate::object_storage::{self, ObjectStore};
 use crate::AnalysisDataset;
 
 pub use anyhow::{anyhow, Result};
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use futures::future::{self, join_all};
+use futures::future::join_all;
 use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use itertools::Itertools;
@@ -20,7 +20,6 @@ use ndarray::{s, Array2, Array3, Axis};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::task::spawn_blocking;
-use tokio::time::error::Elapsed;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
 const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.1.zarr";
@@ -68,11 +67,14 @@ static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     ])
 });
 
-async fn reformat(
+/// # Errors
+///
+/// Currently never returns an error, but it should report errors
+pub async fn reformat(
     data_variable_name: String,
     time_start: DateTime<Utc>,
     time_end: DateTime<Utc>,
-    future_buffer_base: usize,
+    future_buffer_base_size: usize,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -83,15 +85,15 @@ async fn reformat(
     let output_store = object_storage::output_store()?;
 
     let results = futures::stream::iter(download_batches)
-        .map(|download_batch| download_batch.process(http_client))
-        .buffer_unordered(future_buffer_base)
+        .map(|download_batch| download_batch.process(http_client.clone()))
+        .buffer_unordered(future_buffer_base_size)
         .map(DownloadedBatch::zarr_array_chunks)
-        .buffer_unordered(future_buffer_base * 8)
+        .buffer_unordered(future_buffer_base_size * 8)
         .flat_map(futures::stream::iter)
         .map(ZarrChunkArray::compress)
-        .buffer_unordered(future_buffer_base * 8)
-        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store))
-        .buffer_unordered(future_buffer_base * 2)
+        .buffer_unordered(future_buffer_base_size * 8)
+        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store.clone()))
+        .buffer_unordered(future_buffer_base_size * 2)
         .collect::<Vec<_>>()
         .await;
 
@@ -145,6 +147,7 @@ pub struct ZarrChunkCompressed {
     compressed_length: usize,
 }
 
+#[allow(dead_code)] // We report but don't currently do something with all these values
 #[derive(Debug, Clone)]
 pub struct ZarrChunkUploadInfo {
     run_config: AnalysisRunConfig,
@@ -227,7 +230,7 @@ impl AnalysisRunConfig {
 }
 
 impl DownloadBatch {
-    async fn process(&self, http_client: HttpClient) -> DownloadedBatch {
+    async fn process(self, http_client: http::Client) -> DownloadedBatch {
         let load_file_futures = self.time_coordinates.iter().map(|init_time| {
             load_variable_from_file(
                 self.data_variable_name.as_str(),
@@ -265,7 +268,7 @@ impl DownloadBatch {
 async fn load_variable_from_file(
     data_variable_name: &str,
     init_time: DateTime<Utc>,
-    http_client: HttpClient,
+    http_client: http::Client,
 ) -> Result<Array2<E>> {
     let (init_date, init_hour) = (init_time.format("%Y%m%d"), init_time.format("%H"));
 
@@ -457,6 +460,7 @@ impl ZarrChunkCompressed {
             bytes.content_length() / 10_usize.pow(6)
         );
 
+        #[allow(clippy::cast_precision_loss)]
         Ok(ZarrChunkUploadInfo {
             run_config: self.run_config,
             data_variable_name: self.data_variable_name.clone(),
@@ -473,11 +477,12 @@ impl ZarrChunkCompressed {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn print_report(results: Vec<ZarrChunkUploadInfo>, elapsed: Duration) {
+fn print_report(results: Vec<Result<ZarrChunkUploadInfo>>, elapsed: Duration) {
     let num_chunks = results.len();
 
     let (uncompressed_mbs, compressed_mbs): (Vec<f64>, Vec<f64>) = results
         .into_iter()
+        .filter_map(Result::ok)
         .map(|info| (info.uncompressed_mb, info.compressed_mb))
         .collect();
 

@@ -9,6 +9,9 @@ pub fn output_store() -> Result<ObjectStore> {
         .with_access_key_id(std::env::var("OUTPUT_STORE_ACCESS_KEY_ID")?)
         .with_secret_access_key(std::env::var("OUTPUT_STORE_SECRET_ACCESS_KEY")?);
 
+    if let Ok(session_token) = std::env::var("OUTPUT_STORE_SESSION_TOKEN") {
+        store_builder = store_builder.with_token(session_token);
+    }
     if let Ok(bucket) = std::env::var("OUTPUT_STORE_BUCKET") {
         store_builder = store_builder.with_bucket_name(bucket);
     }

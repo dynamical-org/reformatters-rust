@@ -4,6 +4,8 @@
     "rust-analyzer.check.extraArgs": [
         "--",
         "-W",
-        "clippy::pedantic"
-    ]
+        "clippy::pedantic",
+        "-A",
+        "clippy::missing_errors_doc"
+    ],
 }
