@@ -49,7 +49,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     latitude_step: 0.25,
     latitude_chunk_size: 361,
 
-    dimension_names: vec!["time", "longitude", "latitude"],
+    dimension_names: vec!["time", "latitude", "longitude"],
     data_variable_names: vec![
         "temperature_2m",
         "precipitation_surface",
@@ -453,10 +453,10 @@ impl ZarrChunkArray {
 
 impl ZarrChunkCompressed {
     async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
-        assert!(self.run_config.dataset.dimension_names == vec!["time", "longitude", "latitude"]);
+        assert!(self.run_config.dataset.dimension_names == vec!["time", "latitude", "longitude"]);
         let chunk_index_name = format!(
             "{}.{}.{}",
-            self.time_chunk_index, self.longitude_chunk_index, self.latitude_chunk_index
+            self.time_chunk_index, self.latitude_chunk_index, self.longitude_chunk_index
         );
         let chunk_path = format!(
             "{DEST_ROOT_PATH}/{}/{chunk_index_name}",
