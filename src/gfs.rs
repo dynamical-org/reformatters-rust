@@ -8,7 +8,9 @@ use crate::http;
 use crate::num_chunks;
 use crate::object_storage::{self, ObjectStore, PutPayload, PutResult};
 use crate::AnalysisDataset;
-
+use crate::AnalysisRunConfig;
+use crate::DataDimension;
+use crate::DataVariable;
 pub use anyhow::{anyhow, Result};
 use backon::ExponentialBuilder;
 use backon::Retryable;
@@ -50,12 +52,58 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     latitude_step: 0.25,
     latitude_chunk_size: 361,
 
-    dimension_names: vec!["time", "latitude", "longitude"],
-    data_variable_names: vec![
-        "temperature_2m",
-        "precipitation_surface",
-        "wind_u_10m",
-        "wind_v_10m",
+    data_dimensions: vec![
+        DataDimension {
+            name: "time",
+            long_name: "time",
+            units: "hours since 2015-01-15 00:00:00",
+            dtype: "<i8",
+            extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
+        },
+        DataDimension {
+            name: "latitude",
+            long_name: "latitude",
+            units: "TODO",
+            dtype: "<f8",
+            extra_metadata: HashMap::new(),
+        },
+        DataDimension {
+            name: "longitude",
+            long_name: "longitude",
+            units: "TODO",
+            dtype: "<f8",
+            extra_metadata: HashMap::new(),
+        },
+    ],
+    data_variables: vec![
+        DataVariable {
+            name: "temperature_2m",
+            long_name: "Temperature 2 meters above earth surface",
+            units: "C",
+            dtype: "<f4",
+            grib_variable_name: "TMP:2 m above ground",
+        },
+        DataVariable {
+            name: "precipitation_surface",
+            long_name: "Precipitation rate at earth surface",
+            units: "kg/(m^2 s)",
+            dtype: "<f4",
+            grib_variable_name: "PRATE:surface",
+        },
+        DataVariable {
+            name: "wind_u_10m",
+            long_name: "Wind speed u-component 10 meters above earth surface",
+            units: "m/s",
+            dtype: "<f4",
+            grib_variable_name: "UGRD:10 m above ground",
+        },
+        DataVariable {
+            name: "wind_v_10m",
+            long_name: "Wind speed v-component 10 meters above earth surface",
+            units: "m/s",
+            dtype: "<f4",
+            grib_variable_name: "UGRD:10 m above ground",
+        },
     ],
 });
 
@@ -79,7 +127,10 @@ pub async fn reformat(
 ) -> Result<()> {
     let start = Instant::now();
 
-    let run_config = get_run_config(&GFS_DATASET, data_variable_name, time_start, time_end)?;
+    let run_config = get_run_config(&GFS_DATASET, &data_variable_name, time_start, time_end)?;
+
+    run_config.write_zarr_metadata()?;
+
     let download_batches = run_config.get_download_batches()?;
 
     let http_client = http::client()?;
@@ -101,13 +152,6 @@ pub async fn reformat(
     print_report(results, start.elapsed());
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct AnalysisRunConfig {
-    pub dataset: AnalysisDataset,
-    pub data_variable_name: String,
-    pub time_coordinates: Arc<Vec<DateTime<Utc>>>, // Arc because this struct is cloned often and this vec can be big
 }
 
 #[derive(Debug, Clone)]
@@ -165,14 +209,16 @@ pub struct ZarrChunkUploadInfo {
 
 fn get_run_config(
     dataset: &AnalysisDataset,
-    data_variable_name: String,
+    data_variable_name: &str,
     time_start: DateTime<Utc>,
     time_end: DateTime<Utc>,
 ) -> Result<AnalysisRunConfig> {
-    if !dataset
-        .data_variable_names
-        .contains(&data_variable_name.as_str())
-    {
+    let data_variable = dataset
+        .data_variables
+        .iter()
+        .find(|data_variable| data_variable.name == data_variable_name);
+
+    if data_variable.is_none() {
         return Err(anyhow!("Variable name {data_variable_name} not supported."));
     }
 
@@ -201,7 +247,7 @@ fn get_run_config(
 
     Ok(AnalysisRunConfig {
         dataset: dataset.clone(),
-        data_variable_name,
+        data_variable: data_variable.unwrap().clone(),
         time_coordinates: Arc::new(time_coordinates),
     })
 }
@@ -222,7 +268,7 @@ impl AnalysisRunConfig {
             .enumerate()
             .map(|(time_chunk_index, chunk_time_coordinates)| DownloadBatch {
                 run_config: self.clone(),
-                data_variable_name: self.data_variable_name.clone(),
+                data_variable_name: self.data_variable.name.to_string(),
                 time_coordinates: chunk_time_coordinates.copied().collect(),
                 time_chunk_index,
             })
@@ -301,7 +347,6 @@ async fn download_band(
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<String> {
-    time_coordinate.duration_round()
     let (init_date, init_hour) = (
         time_coordinate.format("%Y%m%d"),
         time_coordinate.format("%H"),
@@ -460,7 +505,14 @@ impl ZarrChunkCompressed {
     async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
         let upload_start_time = Instant::now();
 
-        assert!(self.run_config.dataset.dimension_names == vec!["time", "latitude", "longitude"]);
+        let data_dimension_names: Vec<&str> = self
+            .run_config
+            .dataset
+            .data_dimensions
+            .iter()
+            .map(|data_dimension| data_dimension.name)
+            .collect();
+        assert!(data_dimension_names == vec!["time", "latitude", "longitude"]);
         let chunk_index_name = format!(
             "{}.{}.{}",
             self.time_chunk_index, self.latitude_chunk_index, self.longitude_chunk_index
