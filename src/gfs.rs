@@ -14,7 +14,7 @@ use crate::DataVariable;
 pub use anyhow::{anyhow, Result};
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, TimeDelta, TimeZone, Timelike, Utc};
 use futures::future::join_all;
 use futures::stream::StreamExt;
 use futures::TryStreamExt;
@@ -25,7 +25,7 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
+const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-smalltest.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -39,7 +39,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
 
     time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: None,
-    time_step: TimeDelta::try_hours(6).unwrap(),
+    time_step: TimeDelta::try_hours(1).unwrap(),
     time_chunk_size: 40,
 
     longitude_start: -180.,
@@ -129,7 +129,7 @@ pub async fn reformat(
 
     let run_config = get_run_config(&GFS_DATASET, &data_variable_name, time_start, time_end)?;
 
-    run_config.write_zarr_metadata()?;
+    // run_config.write_zarr_metadata()?;
 
     let download_batches = run_config.get_download_batches()?;
 
@@ -278,10 +278,10 @@ impl AnalysisRunConfig {
 
 impl DownloadBatch {
     async fn process(self, http_client: http::Client) -> DownloadedBatch {
-        let load_file_futures = self.time_coordinates.iter().map(|init_time| {
+        let load_file_futures = self.time_coordinates.iter().map(|time_coordinate| {
             load_variable_from_file(
                 self.data_variable_name.as_str(),
-                *init_time,
+                *time_coordinate,
                 http_client.clone(),
             )
         });
@@ -317,7 +317,7 @@ async fn load_variable_from_file(
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<Array2<E>> {
-    let file_path = if time_coordinate < Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap() {
+    let file_path = if time_coordinate < Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap() {
         let local_data_dir = std::env::var("LOCAL_DATA_DIR")?;
         let datetime_str = time_coordinate.format("%Y%m%d%H");
         format!("{local_data_dir}/{data_variable_name}/gfs.0p25.{datetime_str}.f000.grib2")
@@ -347,20 +347,31 @@ async fn download_band(
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<String> {
-    let (init_date, init_hour) = (
-        time_coordinate.format("%Y%m%d"),
-        time_coordinate.format("%H"),
-    );
+    const INIT_FREQUENCY_HOURS: i64 = 6;
+    let lead_time_hour: i64 = i64::from(time_coordinate.hour()) % INIT_FREQUENCY_HOURS;
+    assert!(lead_time_hour >= 0);
+    assert!(lead_time_hour < 6);
+
+    let init_time = time_coordinate
+        - TimeDelta::try_hours(lead_time_hour).expect("lead time hours to be within 0 - 5");
+
+    let (init_date, init_hour) = (init_time.format("%Y%m%d"), init_time.format("%H"));
+
+    dbg!(time_coordinate, &init_date, &init_hour, &lead_time_hour);
 
     // `atmos` and `wave` directories were added to the path starting 2021-03-23T00Z
-    let data_path = if time_coordinate < Utc.with_ymd_and_hms(2021, 3, 23, 0, 0, 0).unwrap() {
-        format!("gfs.{init_date}/{init_hour}/gfs.t{init_hour}z.pgrb2.0p25.f000")
+    let data_path = if init_time < Utc.with_ymd_and_hms(2021, 3, 23, 0, 0, 0).unwrap() {
+        format!("gfs.{init_date}/{init_hour}/gfs.t{init_hour}z.pgrb2.0p25.f{lead_time_hour:0>3}")
     } else {
-        format!("gfs.{init_date}/{init_hour}/atmos/gfs.t{init_hour}z.pgrb2.0p25.f000")
+        format!(
+            "gfs.{init_date}/{init_hour}/atmos/gfs.t{init_hour}z.pgrb2.0p25.f{lead_time_hour:0>3}"
+        )
     };
 
     let data_url = format!("{S3_BUCKET_HOST}/{data_path}");
     let index_url = format!("{data_url}.idx");
+
+    println!("{data_url}");
 
     let index_contents = http_client
         .get(&index_url)
