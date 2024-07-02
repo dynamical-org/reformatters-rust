@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::mem::size_of_val;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -5,7 +6,7 @@ use std::{cmp::min, collections::HashMap};
 
 use crate::http;
 use crate::num_chunks;
-use crate::object_storage::{self, ObjectStore};
+use crate::object_storage::{self, ObjectStore, PutPayload, PutResult};
 use crate::AnalysisDataset;
 
 pub use anyhow::{anyhow, Result};
@@ -22,7 +23,7 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "aldenks/gfs-dynamical/analysis/v0.1.1-beta1.zarr";
+const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -267,15 +268,15 @@ impl DownloadBatch {
 
 async fn load_variable_from_file(
     data_variable_name: &str,
-    init_time: DateTime<Utc>,
+    time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<Array2<E>> {
-    let file_path = if init_time < Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap() {
+    let file_path = if time_coordinate < Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap() {
         let local_data_dir = std::env::var("LOCAL_DATA_DIR")?;
-        let datetime_str = init_time.format("%Y%m%d%H");
+        let datetime_str = time_coordinate.format("%Y%m%d%H");
         format!("{local_data_dir}/{data_variable_name}/gfs.0p25.{datetime_str}.f000.grib2")
     } else {
-        download_band(data_variable_name, init_time, http_client).await?
+        download_band(data_variable_name, time_coordinate, http_client).await?
     };
     println!("{}", &file_path);
 
@@ -297,13 +298,17 @@ async fn load_variable_from_file(
 
 async fn download_band(
     data_variable_name: &str,
-    init_time: DateTime<Utc>,
+    time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<String> {
-    let (init_date, init_hour) = (init_time.format("%Y%m%d"), init_time.format("%H"));
+    time_coordinate.duration_round()
+    let (init_date, init_hour) = (
+        time_coordinate.format("%Y%m%d"),
+        time_coordinate.format("%H"),
+    );
 
     // `atmos` and `wave` directories were added to the path starting 2021-03-23T00Z
-    let data_path = if init_time < Utc.with_ymd_and_hms(2021, 3, 23, 0, 0, 0).unwrap() {
+    let data_path = if time_coordinate < Utc.with_ymd_and_hms(2021, 3, 23, 0, 0, 0).unwrap() {
         format!("gfs.{init_date}/{init_hour}/gfs.t{init_hour}z.pgrb2.0p25.f000")
     } else {
         format!("gfs.{init_date}/{init_hour}/atmos/gfs.t{init_hour}z.pgrb2.0p25.f000")
@@ -453,6 +458,8 @@ impl ZarrChunkArray {
 
 impl ZarrChunkCompressed {
     async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
+        let upload_start_time = Instant::now();
+
         assert!(self.run_config.dataset.dimension_names == vec!["time", "latitude", "longitude"]);
         let chunk_index_name = format!(
             "{}.{}.{}",
@@ -465,12 +472,11 @@ impl ZarrChunkCompressed {
 
         let bytes: object_store::PutPayload = self.bytes.into();
 
-        let upload_start_time = Instant::now();
-
-        let put_result = (|| async { store.put(&chunk_path.clone().into(), bytes.clone()).await })
-            .retry(&ExponentialBuilder::default())
-            .await
-            .inspect_err(|e| println!("Upload error, chunk {chunk_index_name}, {e}"))?;
+        let put_result =
+            (|| async { do_upload(store.clone(), chunk_path.clone(), bytes.clone()).await })
+                .retry(&ExponentialBuilder::default())
+                .await
+                .inspect_err(|e| println!("Upload error, chunk {chunk_index_name}, {e}"))?;
 
         let upload_time = upload_start_time.elapsed();
 
@@ -493,6 +499,27 @@ impl ZarrChunkCompressed {
             object_version: put_result.version,
         })
     }
+}
+
+async fn do_upload(store: ObjectStore, chunk_path: String, bytes: PutPayload) -> Result<PutResult> {
+    let mut put_result_result = store.put(&chunk_path.into(), bytes).await;
+
+    // A little nonsense to ignore deeply nested error if the ETag isn't
+    // present on the response. The put still succeeds in this case.
+    if let Err(e) = &put_result_result {
+        if let Some(source) = e.source() {
+            if let Some(source) = source.source() {
+                if source.to_string().starts_with("ETag Header missing") {
+                    put_result_result = Ok(PutResult {
+                        e_tag: None,
+                        version: None,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(put_result_result?)
 }
 
 #[allow(clippy::cast_precision_loss)]

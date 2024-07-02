@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub type ObjectStore = Arc<dyn object_store::ObjectStore>;
+pub type PutPayload = object_store::PutPayload;
 pub type PutResult = object_store::PutResult;
 
 pub fn output_store() -> Result<ObjectStore> {
