@@ -1,14 +1,12 @@
 pub mod gfs;
 pub mod http;
 pub mod object_storage;
-use std::{
-    collections::HashMap,
-    fs::{self},
-    io::Write,
-};
+use std::{collections::HashMap, error::Error, fs, io::Write};
 
 use anyhow::Result;
+use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
+use object_storage::{ObjectStore, PutPayload, PutResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -62,6 +60,8 @@ pub struct AnalysisRunConfig {
     pub time_coordinates: Arc<Vec<DateTime<Utc>>>, // Arc because this struct is cloned often and this vec can be big
 }
 
+const WRITE_METADATA_TO_OBJECT_STORAGE: bool = true;
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -71,9 +71,23 @@ fn num_chunks(size: usize, chunk_size: usize) -> usize {
     ((size as f64) / (chunk_size as f64)).ceil() as usize
 }
 
-fn write_to_file(file_path: String, json_value: &Value) -> std::io::Result<()> {
-    let mut file = fs::File::create(file_path)?;
-    file.write_all(serde_json::to_string_pretty(json_value).unwrap().as_bytes())?;
+async fn write_metadata(
+    file_path: String,
+    json_value: &Value,
+    object_store: ObjectStore,
+) -> Result<()> {
+    let json_string = serde_json::to_string_pretty(json_value)?;
+    if WRITE_METADATA_TO_OBJECT_STORAGE {
+        let payload: PutPayload = json_string.into();
+        (|| async { do_upload(object_store.clone(), file_path.clone(), payload.clone()).await })
+            .retry(&ExponentialBuilder::default())
+            .await?;
+    } else {
+        let bytes = json_string.as_bytes();
+        let mut file = fs::File::create(file_path)?;
+        file.write_all(bytes)?;
+    }
+
     Ok(())
 }
 
@@ -113,11 +127,12 @@ struct ZarrAttributeMetadata {
     units: &'static str,
 }
 
-fn handle_sub_metadata(
+async fn write_array_metadata(
     field_name: &str,
     mut zmetadata: HashMap<String, serde_json::Value>,
     zarr_array_json: &serde_json::Value,
     zarr_attribute_json: &serde_json::Value,
+    store: ObjectStore,
 ) -> Result<HashMap<String, serde_json::Value>> {
     zmetadata.insert(format!("{field_name}/.zarray"), to_value(&zarr_array_json));
     zmetadata.insert(
@@ -125,12 +140,21 @@ fn handle_sub_metadata(
         to_value(&zarr_attribute_json),
     );
 
-    fs::create_dir(format!("metadata/{field_name}")).expect("Error writing zarr metadata");
-    write_to_file(format!("metadata/{field_name}/.zarray"), zarr_array_json)?;
-    write_to_file(
+    if !WRITE_METADATA_TO_OBJECT_STORAGE {
+        fs::create_dir(format!("metadata/{field_name}")).expect("Error writing zarr metadata");
+    }
+    write_metadata(
+        format!("metadata/{field_name}/.zarray"),
+        zarr_array_json,
+        store.clone(),
+    )
+    .await?;
+    write_metadata(
         format!("metadata/{field_name}/.zattrs"),
         zarr_attribute_json,
-    )?;
+        store.clone(),
+    )
+    .await?;
 
     Ok(zmetadata.clone())
 }
@@ -139,8 +163,10 @@ impl AnalysisRunConfig {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_sign_loss)]
-    pub fn write_zarr_metadata(&self) -> Result<()> {
-        fs::create_dir("metadata").expect("Error writing zarr metadata");
+    pub async fn write_zarr_metadata(&self, store: ObjectStore) -> Result<()> {
+        if !WRITE_METADATA_TO_OBJECT_STORAGE {
+            fs::create_dir("metadata").expect("Error writing zarr metadata");
+        }
 
         let data_variable_compressor_metadata = ZarrCompressorMetadata {
             blocksize: 0,
@@ -192,12 +218,14 @@ impl AnalysisRunConfig {
                 units: data_variable.units,
             };
 
-            zmetadata = handle_sub_metadata(
+            zmetadata = write_array_metadata(
                 data_variable.name,
                 zmetadata.clone(),
                 &to_value(&zarr_array_metadata),
                 &to_value(&zarr_attribute_metadata),
-            )?;
+                store.clone(),
+            )
+            .await?;
         }
 
         let data_dimension_compressor_metadata = ZarrCompressorMetadata {
@@ -244,21 +272,50 @@ impl AnalysisRunConfig {
                 zarr_attribute_metadata_with_extra_fields.insert(key.to_string(), json!(value));
             }
 
-            zmetadata = handle_sub_metadata(
+            zmetadata = write_array_metadata(
                 data_dimension.name,
                 zmetadata.clone(),
                 &to_value(&zarr_array_metadata),
                 &to_value(&zarr_attribute_metadata_with_extra_fields),
-            )?;
+                store.clone(),
+            )
+            .await?;
         }
 
-        write_to_file(
+        write_metadata(
             "metadata/.zmetadata".to_string(),
             &json!({"metadata": to_value(&zmetadata), "zarr_consolidated_format": 1}),
-        )?;
-        write_to_file("metadata/.zattrs".to_string(), &json!({}))?;
-        write_to_file("metadata/.zgroup".to_string(), &zgroup)?;
+            store.clone(),
+        )
+        .await?;
+        write_metadata("metadata/.zattrs".to_string(), &json!({}), store.clone()).await?;
+        write_metadata("metadata/.zgroup".to_string(), &zgroup, store.clone()).await?;
 
         Ok(())
     }
+}
+
+pub async fn do_upload(
+    store: ObjectStore,
+    chunk_path: String,
+    bytes: PutPayload,
+) -> Result<PutResult> {
+    let mut put_result_result = store.put(&chunk_path.into(), bytes).await;
+
+    // A little nonsense to ignore deeply nested error if the ETag isn't
+    // present on the response. The put still succeeds in this case.
+    if let Err(e) = &put_result_result {
+        if let Some(source) = e.source() {
+            if let Some(source) = source.source() {
+                if source.to_string().starts_with("ETag Header missing") {
+                    put_result_result = Ok(PutResult {
+                        e_tag: None,
+                        version: None,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(put_result_result?)
 }

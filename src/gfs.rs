@@ -1,12 +1,12 @@
-use std::error::Error;
 use std::mem::size_of_val;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
+use crate::do_upload;
 use crate::http;
 use crate::num_chunks;
-use crate::object_storage::{self, ObjectStore, PutPayload, PutResult};
+use crate::object_storage::{self, ObjectStore};
 use crate::AnalysisDataset;
 use crate::AnalysisRunConfig;
 use crate::DataDimension;
@@ -129,12 +129,12 @@ pub async fn reformat(
 
     let run_config = get_run_config(&GFS_DATASET, &data_variable_name, time_start, time_end)?;
 
-    // run_config.write_zarr_metadata()?;
-
     let download_batches = run_config.get_download_batches()?;
 
     let http_client = http::client()?;
     let output_store = object_storage::output_store()?;
+
+    run_config.write_zarr_metadata(output_store.clone()).await?;
 
     let results = futures::stream::iter(download_batches)
         .map(|download_batch| download_batch.process(http_client.clone()))
@@ -562,27 +562,6 @@ impl ZarrChunkCompressed {
             object_version: put_result.version,
         })
     }
-}
-
-async fn do_upload(store: ObjectStore, chunk_path: String, bytes: PutPayload) -> Result<PutResult> {
-    let mut put_result_result = store.put(&chunk_path.into(), bytes).await;
-
-    // A little nonsense to ignore deeply nested error if the ETag isn't
-    // present on the response. The put still succeeds in this case.
-    if let Err(e) = &put_result_result {
-        if let Some(source) = e.source() {
-            if let Some(source) = source.source() {
-                if source.to_string().starts_with("ETag Header missing") {
-                    put_result_result = Ok(PutResult {
-                        e_tag: None,
-                        version: None,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(put_result_result?)
 }
 
 #[allow(clippy::cast_precision_loss)]

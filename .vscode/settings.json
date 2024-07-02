@@ -6,6 +6,8 @@
         "-W",
         "clippy::pedantic",
         "-A",
-        "clippy::missing_errors_doc"
+        "clippy::missing_errors_doc",
+        "-A",
+        "clippy::missing_panics_doc"
     ],
 }
