@@ -200,8 +200,6 @@ impl AnalysisRunConfig {
         let zgroup = json!({"zarr_format": 2});
 
         let mut zmetadata: HashMap<String, serde_json::Value> = HashMap::new();
-        zmetadata.insert(".zattrs".to_string(), json!({}));
-        zmetadata.insert(".zgroup".to_string(), zgroup.clone());
 
         let time_shape_size = self.time_coordinates.len();
         let latitude_shape_size = ((self.dataset.latitude_start - self.dataset.latitude_end)
@@ -327,6 +325,7 @@ impl AnalysisRunConfig {
         }
 
         let dataset_metadata = HashMap::from([
+            ("id".to_string(), to_value(&self.dataset.id)),
             ("name".to_string(), to_value(&self.dataset.name)),
             (
                 "description".to_string(),
@@ -353,7 +352,8 @@ impl AnalysisRunConfig {
             ),
         ]);
 
-        zmetadata.extend(dataset_metadata);
+        zmetadata.insert(".zattrs".to_string(), json!(dataset_metadata));
+        zmetadata.insert(".zgroup".to_string(), zgroup.clone());
 
         write_metadata(
             ".zmetadata",

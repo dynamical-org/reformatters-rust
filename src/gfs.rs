@@ -25,7 +25,7 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-smalltest.zarr";
+const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -33,16 +33,16 @@ const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-smalltest.zarr";
 /// - make data variable enum which contains name, dimensions, chunking, units, grib index names, etc
 type E = f32; // element type
 
-pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| {
-    AnalysisDataset {
-    id: "noaa-gfs-analysis",
+pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
+    id: "noaa-gfs-analysis-hourly",
     name: "GFS analysis, hourly",
-    description: "Historical weather data from the US National Oceanic and Atmospheric Administration's Global Forecast System.",
+    description:
+        "Historical weather data from the Global Forecast System (GFS) model operated by NOAA NCEP.",
     url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
     spatial_coverage: "Global",
     spatial_resolution: "0.25 degrees (approx 20km)",
 
-    time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
+    time_start: Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap(),
     time_end: None,
     time_step: TimeDelta::try_hours(1).unwrap(),
     time_chunk_size: 40,
@@ -122,7 +122,6 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| {
             value_mean: 0.0,
         },
     ],
-}
 });
 
 static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
@@ -249,10 +248,10 @@ fn get_run_config(
         ));
     }
 
-    let now = Utc::now();
-    if now < time_end {
-        return Err(anyhow!("End time {time_end} is before now ({now})"));
-    }
+    // let now = Utc::now();
+    // if now > time_end {
+    //     return Err(anyhow!("End time {time_end} is before now ({now})"));
+    // }
 
     let time_coordinates = (0..u32::MAX)
         .scan(time_start - dataset.time_step, |time, _| {
@@ -376,8 +375,6 @@ async fn download_band(
         - TimeDelta::try_hours(lead_time_hour).expect("lead time hours to be within 0 - 5");
 
     let (init_date, init_hour) = (init_time.format("%Y%m%d"), init_time.format("%H"));
-
-    dbg!(time_coordinate, &init_date, &init_hour, &lead_time_hour);
 
     // `atmos` and `wave` directories were added to the path starting 2021-03-23T00Z
     let data_path = if init_time < Utc.with_ymd_and_hms(2021, 3, 23, 0, 0, 0).unwrap() {
