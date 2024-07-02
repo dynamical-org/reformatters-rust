@@ -33,9 +33,14 @@ const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-smalltest.zarr";
 /// - make data variable enum which contains name, dimensions, chunking, units, grib index names, etc
 type E = f32; // element type
 
-pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
+pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| {
+    AnalysisDataset {
     id: "noaa-gfs-analysis",
-    name: "NOAA GFS Analysis",
+    name: "GFS analysis, hourly",
+    description: "Historical weather data from the US National Oceanic and Atmospheric Administration's Global Forecast System.",
+    url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
+    spatial_coverage: "Global",
+    spatial_resolution: "0.25 degrees (approx 20km)",
 
     time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: None,
@@ -55,22 +60,22 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     data_dimensions: vec![
         DataDimension {
             name: "time",
-            long_name: "time",
+            long_name: "The point in time referred to by the data",
             units: "hours since 2015-01-15 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
         },
         DataDimension {
             name: "latitude",
-            long_name: "latitude",
-            units: "TODO",
+            long_name: "The north-south position of the value's center point",
+            units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),
         },
         DataDimension {
             name: "longitude",
-            long_name: "longitude",
-            units: "TODO",
+            long_name: "The east-west position of the value's center point",
+            units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),
         },
@@ -82,6 +87,9 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "C",
             dtype: "<f4",
             grib_variable_name: "TMP:2 m above ground",
+            value_min: 0.0,
+            value_max: 0.0,
+            value_mean: 0.0,
         },
         DataVariable {
             name: "precipitation_surface",
@@ -89,6 +97,9 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "kg/(m^2 s)",
             dtype: "<f4",
             grib_variable_name: "PRATE:surface",
+            value_min: 0.0,
+            value_max: 0.0,
+            value_mean: 0.0,
         },
         DataVariable {
             name: "wind_u_10m",
@@ -96,6 +107,9 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "m/s",
             dtype: "<f4",
             grib_variable_name: "UGRD:10 m above ground",
+            value_min: 0.0,
+            value_max: 0.0,
+            value_mean: 0.0,
         },
         DataVariable {
             name: "wind_v_10m",
@@ -103,8 +117,12 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "m/s",
             dtype: "<f4",
             grib_variable_name: "UGRD:10 m above ground",
+            value_min: 0.0,
+            value_max: 0.0,
+            value_mean: 0.0,
         },
     ],
+}
 });
 
 static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {

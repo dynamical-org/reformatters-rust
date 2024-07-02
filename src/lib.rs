@@ -18,6 +18,9 @@ pub struct DataVariable {
     pub units: &'static str,
     pub grib_variable_name: &'static str,
     pub dtype: &'static str,
+    pub value_min: f32,
+    pub value_max: f32,
+    pub value_mean: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +36,10 @@ pub struct DataDimension {
 pub struct AnalysisDataset {
     pub id: &'static str,
     pub name: &'static str,
+    pub description: &'static str,
+    pub url: &'static str,
+    pub spatial_coverage: &'static str,
+    pub spatial_resolution: &'static str,
 
     pub time_start: DateTime<Utc>,
     pub time_end: Option<DateTime<Utc>>,
@@ -247,6 +254,12 @@ impl AnalysisRunConfig {
             id: "blosc",
             shuffle: 1,
         };
+
+        let end_date_string = match self.dataset.time_end {
+            Some(date) => date.to_string(),
+            None => "Present".to_string(),
+        };
+
         for data_dimension in self.dataset.data_dimensions.clone() {
             let shape_size = match data_dimension.name {
                 "time" => time_shape_size,
@@ -284,6 +297,24 @@ impl AnalysisRunConfig {
                 zarr_attribute_metadata_with_extra_fields.insert(key.to_string(), json!(value));
             }
 
+            let start = match data_dimension.name {
+                "longitude" => self.dataset.longitude_start.to_string(),
+                "latitude" => self.dataset.latitude_start.to_string(),
+                "time" => self.dataset.time_start.to_string(),
+                &_ => todo!(),
+            };
+            let end = match data_dimension.name {
+                "longitude" => self.dataset.longitude_end.to_string(),
+                "latitude" => self.dataset.latitude_end.to_string(),
+                "time" => end_date_string.clone(),
+                &_ => todo!(),
+            };
+
+            zarr_attribute_metadata_with_extra_fields.extend(HashMap::from([
+                ("start".to_string(), to_value(&start)),
+                ("end".to_string(), to_value(&end)),
+            ]));
+
             zmetadata = write_array_metadata(
                 data_dimension.name,
                 zmetadata.clone(),
@@ -294,6 +325,35 @@ impl AnalysisRunConfig {
             )
             .await?;
         }
+
+        let dataset_metadata = HashMap::from([
+            ("name".to_string(), to_value(&self.dataset.name)),
+            (
+                "description".to_string(),
+                to_value(&self.dataset.description),
+            ),
+            (
+                "time_domain".to_string(),
+                to_value(&format!(
+                    "{} to {}",
+                    self.dataset.time_start, end_date_string
+                )),
+            ),
+            (
+                "time_resolution".to_string(),
+                to_value(&format!("{} hour", self.dataset.time_step.num_hours())),
+            ),
+            (
+                "spatial_domain".to_string(),
+                to_value(&self.dataset.spatial_coverage),
+            ),
+            (
+                "spatial_resolution".to_string(),
+                to_value(&self.dataset.spatial_resolution),
+            ),
+        ]);
+
+        zmetadata.extend(dataset_metadata);
 
         write_metadata(
             ".zmetadata",
