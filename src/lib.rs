@@ -72,16 +72,24 @@ fn num_chunks(size: usize, chunk_size: usize) -> usize {
 }
 
 async fn write_metadata(
-    file_path: String,
+    file_path: &str,
     json_value: &Value,
     object_store: ObjectStore,
+    dest_root_path: &str,
 ) -> Result<()> {
     let json_string = serde_json::to_string_pretty(json_value)?;
     if WRITE_METADATA_TO_OBJECT_STORAGE {
         let payload: PutPayload = json_string.into();
-        (|| async { do_upload(object_store.clone(), file_path.clone(), payload.clone()).await })
-            .retry(&ExponentialBuilder::default())
-            .await?;
+        (|| async {
+            do_upload(
+                object_store.clone(),
+                format!("{dest_root_path}/{file_path}"),
+                payload.clone(),
+            )
+            .await
+        })
+        .retry(&ExponentialBuilder::default())
+        .await?;
     } else {
         let bytes = json_string.as_bytes();
         let mut file = fs::File::create(file_path)?;
@@ -133,6 +141,7 @@ async fn write_array_metadata(
     zarr_array_json: &serde_json::Value,
     zarr_attribute_json: &serde_json::Value,
     store: ObjectStore,
+    dest_root_path: &str,
 ) -> Result<HashMap<String, serde_json::Value>> {
     zmetadata.insert(format!("{field_name}/.zarray"), to_value(&zarr_array_json));
     zmetadata.insert(
@@ -141,18 +150,20 @@ async fn write_array_metadata(
     );
 
     if !WRITE_METADATA_TO_OBJECT_STORAGE {
-        fs::create_dir(format!("metadata/{field_name}")).expect("Error writing zarr metadata");
+        fs::create_dir(field_name).expect("Error writing zarr metadata");
     }
     write_metadata(
-        format!("metadata/{field_name}/.zarray"),
+        &format!("{field_name}/.zarray"),
         zarr_array_json,
         store.clone(),
+        dest_root_path,
     )
     .await?;
     write_metadata(
-        format!("metadata/{field_name}/.zattrs"),
+        &format!("{field_name}/.zattrs"),
         zarr_attribute_json,
         store.clone(),
+        dest_root_path,
     )
     .await?;
 
@@ -163,11 +174,11 @@ impl AnalysisRunConfig {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_sign_loss)]
-    pub async fn write_zarr_metadata(&self, store: ObjectStore) -> Result<()> {
-        if !WRITE_METADATA_TO_OBJECT_STORAGE {
-            fs::create_dir("metadata").expect("Error writing zarr metadata");
-        }
-
+    pub async fn write_zarr_metadata(
+        &self,
+        store: ObjectStore,
+        dest_root_path: &str,
+    ) -> Result<()> {
         let data_variable_compressor_metadata = ZarrCompressorMetadata {
             blocksize: 0,
             clevel: 5,
@@ -224,6 +235,7 @@ impl AnalysisRunConfig {
                 &to_value(&zarr_array_metadata),
                 &to_value(&zarr_attribute_metadata),
                 store.clone(),
+                dest_root_path,
             )
             .await?;
         }
@@ -278,18 +290,20 @@ impl AnalysisRunConfig {
                 &to_value(&zarr_array_metadata),
                 &to_value(&zarr_attribute_metadata_with_extra_fields),
                 store.clone(),
+                dest_root_path,
             )
             .await?;
         }
 
         write_metadata(
-            "metadata/.zmetadata".to_string(),
+            ".zmetadata",
             &json!({"metadata": to_value(&zmetadata), "zarr_consolidated_format": 1}),
             store.clone(),
+            dest_root_path,
         )
         .await?;
-        write_metadata("metadata/.zattrs".to_string(), &json!({}), store.clone()).await?;
-        write_metadata("metadata/.zgroup".to_string(), &zgroup, store.clone()).await?;
+        write_metadata(".zattrs", &json!({}), store.clone(), dest_root_path).await?;
+        write_metadata(".zgroup", &zgroup, store.clone(), dest_root_path).await?;
 
         Ok(())
     }

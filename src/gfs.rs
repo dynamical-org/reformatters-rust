@@ -134,7 +134,9 @@ pub async fn reformat(
     let http_client = http::client()?;
     let output_store = object_storage::output_store()?;
 
-    run_config.write_zarr_metadata(output_store.clone()).await?;
+    run_config
+        .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
+        .await?;
 
     let results = futures::stream::iter(download_batches)
         .map(|download_batch| download_batch.process(http_client.clone()))
