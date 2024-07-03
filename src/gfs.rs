@@ -68,7 +68,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
         DataDimension {
             name: "time",
             long_name: "Time",
-            units: "hours since 2015-01-15 00:00:00",
+            units: "seconds since 1970-01-01 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
         },
@@ -162,6 +162,9 @@ pub async fn reformat(
     if !skip_metadata {
         run_config
             .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
+            .await?;
+        run_config
+            .write_dimension_coordinates(output_store.clone(), DEST_ROOT_PATH)
             .await?;
     }
 
@@ -274,10 +277,40 @@ fn get_run_config(
         })
         .collect::<Vec<_>>();
 
+    let latitude_coordinates = (0..u32::MAX)
+        .scan(
+            dataset.latitude_start + dataset.latitude_step,
+            |latitude, _| {
+                *latitude -= dataset.latitude_step;
+                if *latitude >= dataset.latitude_end {
+                    Some(*latitude)
+                } else {
+                    None
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let longitude_coordinates = (0..u32::MAX)
+        .scan(
+            dataset.longitude_start - dataset.longitude_step,
+            |longitude, _| {
+                *longitude += dataset.longitude_step;
+                if *longitude < dataset.longitude_end {
+                    Some(*longitude)
+                } else {
+                    None
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+
     Ok(AnalysisRunConfig {
         dataset: dataset.clone(),
         data_variable: data_variable.unwrap().clone(),
         time_coordinates: Arc::new(time_coordinates),
+        latitude_coordinates,
+        longitude_coordinates,
     })
 }
 

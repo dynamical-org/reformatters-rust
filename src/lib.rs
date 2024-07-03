@@ -1,11 +1,12 @@
 pub mod gfs;
 pub mod http;
 pub mod object_storage;
-use std::{collections::HashMap, error::Error, fs, io::Write};
+use std::{collections::HashMap, error::Error, fs, io::Write, mem::size_of_val};
 
 use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
+use futures::future::join_all;
 use object_storage::{ObjectStore, PutPayload, PutResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -66,6 +67,8 @@ pub struct AnalysisRunConfig {
     pub dataset: AnalysisDataset,
     pub data_variable: DataVariable,
     pub time_coordinates: Arc<Vec<DateTime<Utc>>>, // Arc because this struct is cloned often and this vec can be big
+    pub latitude_coordinates: Vec<f64>,
+    pub longitude_coordinates: Vec<f64>,
 }
 
 const WRITE_METADATA_TO_OBJECT_STORAGE: bool = true;
@@ -79,7 +82,33 @@ fn num_chunks(size: usize, chunk_size: usize) -> usize {
     ((size as f64) / (chunk_size as f64)).ceil() as usize
 }
 
-async fn write_metadata(
+async fn write_bytes(
+    file_path: &str,
+    bytes: Vec<u8>,
+    object_store: ObjectStore,
+    dest_root_path: &str,
+) -> Result<()> {
+    if WRITE_METADATA_TO_OBJECT_STORAGE {
+        let payload: PutPayload = bytes.into();
+        (|| async {
+            do_upload(
+                object_store.clone(),
+                format!("{dest_root_path}/{file_path}"),
+                payload.clone(),
+            )
+            .await
+        })
+        .retry(&ExponentialBuilder::default())
+        .await?;
+    } else {
+        let mut file = fs::File::create(file_path)?;
+        file.write_all(bytes.as_slice())?;
+    }
+
+    Ok(())
+}
+
+async fn write_json(
     file_path: &str,
     json_value: &Value,
     object_store: ObjectStore,
@@ -99,7 +128,7 @@ async fn write_metadata(
         .retry(&ExponentialBuilder::default())
         .await?;
     } else {
-        let bytes = json_string.as_bytes();
+        let bytes: &[u8] = json_string.as_bytes();
         let mut file = fs::File::create(file_path)?;
         file.write_all(bytes)?;
     }
@@ -160,14 +189,14 @@ async fn write_array_metadata(
     if !WRITE_METADATA_TO_OBJECT_STORAGE {
         fs::create_dir(field_name).expect("Error writing zarr metadata");
     }
-    write_metadata(
+    write_json(
         &format!("{field_name}/.zarray"),
         zarr_array_json,
         store.clone(),
         dest_root_path,
     )
     .await?;
-    write_metadata(
+    write_json(
         &format!("{field_name}/.zattrs"),
         zarr_attribute_json,
         store.clone(),
@@ -203,13 +232,8 @@ impl AnalysisRunConfig {
         let mut zmetadata: HashMap<String, serde_json::Value> = HashMap::new();
 
         let time_shape_size = self.time_coordinates.len();
-        let latitude_shape_size = ((self.dataset.latitude_start - self.dataset.latitude_end)
-            / self.dataset.latitude_step)
-            .round() as usize
-            + 1;
-        let longitude_shape_size = ((self.dataset.longitude_end - self.dataset.longitude_start)
-            / self.dataset.longitude_step)
-            .round() as usize;
+        let latitude_shape_size = self.latitude_coordinates.len();
+        let longitude_shape_size = self.longitude_coordinates.len();
 
         // Data variable metadata
         for data_variable in self.dataset.data_variables.clone() {
@@ -249,7 +273,7 @@ impl AnalysisRunConfig {
         let data_dimension_compressor_metadata = ZarrCompressorMetadata {
             blocksize: 0,
             clevel: 5,
-            cname: "lz4",
+            cname: "zstd",
             id: "blosc",
             shuffle: 1,
         };
@@ -339,15 +363,57 @@ impl AnalysisRunConfig {
         zmetadata.insert(".zattrs".to_string(), dataset_zattrs.clone());
         zmetadata.insert(".zgroup".to_string(), zgroup.clone());
 
-        write_metadata(
+        write_json(
             ".zmetadata",
             &json!({"metadata": to_value(&zmetadata), "zarr_consolidated_format": 1}),
             store.clone(),
             dest_root_path,
         )
         .await?;
-        write_metadata(".zattrs", &dataset_zattrs, store.clone(), dest_root_path).await?;
-        write_metadata(".zgroup", &zgroup, store.clone(), dest_root_path).await?;
+        write_json(".zattrs", &dataset_zattrs, store.clone(), dest_root_path).await?;
+        write_json(".zgroup", &zgroup, store.clone(), dest_root_path).await?;
+
+        Ok(())
+    }
+
+    pub async fn write_dimension_coordinates(
+        &self,
+        store: ObjectStore,
+        dest_root_path: &str,
+    ) -> Result<()> {
+        let time_values: Vec<i64> = self
+            .time_coordinates
+            .iter()
+            .map(DateTime::timestamp)
+            .collect();
+
+        let time_coords_future = write_bytes(
+            "time/0",
+            blosc_compress(&time_values),
+            store.clone(),
+            dest_root_path,
+        );
+
+        let latitude_coords_future = write_bytes(
+            "latitude/0",
+            blosc_compress(&self.latitude_coordinates),
+            store.clone(),
+            dest_root_path,
+        );
+
+        let longitude_coords_future = write_bytes(
+            "longitude/0",
+            blosc_compress(&self.longitude_coordinates),
+            store.clone(),
+            dest_root_path,
+        );
+
+        join_all([
+            time_coords_future,
+            latitude_coords_future,
+            longitude_coords_future,
+        ])
+        .await;
 
         Ok(())
     }
@@ -376,4 +442,17 @@ pub async fn do_upload(
     }
 
     Ok(put_result_result?)
+}
+
+pub fn blosc_compress<T>(data: &[T]) -> Vec<u8> {
+    let element_size = size_of_val(&data[0]);
+
+    let context = blosc::Context::new()
+        .compressor(blosc::Compressor::Zstd)
+        .unwrap()
+        .typesize(Some(element_size))
+        .clevel(blosc::Clevel::L5)
+        .shuffle(blosc::ShuffleMode::Byte);
+
+    context.compress(data).into()
 }
