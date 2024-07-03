@@ -41,6 +41,8 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
     spatial_coverage: "Global",
     spatial_resolution: "0.25 degrees (approx 20km)",
+    attribution: "NOAA NCEP GFS data processed by dynamical.org",
+    citation: "TODO",
 
     time_start: Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap(),
     time_end: None,
@@ -60,21 +62,21 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     data_dimensions: vec![
         DataDimension {
             name: "time",
-            long_name: "The point in time referred to by the data",
+            long_name: "Timestamp",
             units: "hours since 2015-01-15 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
         },
         DataDimension {
             name: "latitude",
-            long_name: "The north-south position of the value's center point",
+            long_name: "Latitude",
             units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),
         },
         DataDimension {
             name: "longitude",
-            long_name: "The east-west position of the value's center point",
+            long_name: "Longitude",
             units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),

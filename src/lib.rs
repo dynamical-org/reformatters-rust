@@ -40,6 +40,8 @@ pub struct AnalysisDataset {
     pub url: &'static str,
     pub spatial_coverage: &'static str,
     pub spatial_resolution: &'static str,
+    pub attribution: &'static str,
+    pub citation: &'static str,
 
     pub time_start: DateTime<Utc>,
     pub time_end: Option<DateTime<Utc>>,
@@ -324,35 +326,19 @@ impl AnalysisRunConfig {
             .await?;
         }
 
-        let dataset_metadata = HashMap::from([
-            ("id".to_string(), to_value(&self.dataset.id)),
-            ("name".to_string(), to_value(&self.dataset.name)),
-            (
-                "description".to_string(),
-                to_value(&self.dataset.description),
-            ),
-            (
-                "time_domain".to_string(),
-                to_value(&format!(
-                    "{} to {}",
-                    self.dataset.time_start, end_date_string
-                )),
-            ),
-            (
-                "time_resolution".to_string(),
-                to_value(&format!("{} hour", self.dataset.time_step.num_hours())),
-            ),
-            (
-                "spatial_domain".to_string(),
-                to_value(&self.dataset.spatial_coverage),
-            ),
-            (
-                "spatial_resolution".to_string(),
-                to_value(&self.dataset.spatial_resolution),
-            ),
-        ]);
+        let dataset_zattrs = json!({
+            "id": self.dataset.id,
+            "namme": self.dataset.name,
+            "descritpion": self.dataset.description,
+            "attribution": self.dataset.attribution,
+            "citation": self.dataset.citation,
+            "time_domain": format!("{} to {}", self.dataset.time_start, end_date_string),
+            "time_resolution": format!("{} hour", self.dataset.time_step.num_hours()),
+            "spatial_domain": self.dataset.spatial_coverage,
+            "spatial_resolution": self.dataset.spatial_resolution
+        });
 
-        zmetadata.insert(".zattrs".to_string(), json!(dataset_metadata));
+        zmetadata.insert(".zattrs".to_string(), dataset_zattrs.clone());
         zmetadata.insert(".zgroup".to_string(), zgroup.clone());
 
         write_metadata(
@@ -362,7 +348,7 @@ impl AnalysisRunConfig {
             dest_root_path,
         )
         .await?;
-        write_metadata(".zattrs", &json!({}), store.clone(), dest_root_path).await?;
+        write_metadata(".zattrs", &dataset_zattrs, store.clone(), dest_root_path).await?;
         write_metadata(".zgroup", &zgroup, store.clone(), dest_root_path).await?;
 
         Ok(())
