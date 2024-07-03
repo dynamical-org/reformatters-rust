@@ -41,8 +41,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
     spatial_coverage: "Global",
     spatial_resolution: "0.25 degrees (approx 20km)",
-    attribution: "NOAA NCEP GFS data processed by dynamical.org",
-    citation: "TODO",
+    attribution: "NOAA NCEP GFS data processed by dynamical.org from NCAR and AWS archives.",
 
     time_start: Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap(),
     time_end: None,

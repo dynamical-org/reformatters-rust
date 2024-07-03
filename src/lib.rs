@@ -41,7 +41,6 @@ pub struct AnalysisDataset {
     pub spatial_coverage: &'static str,
     pub spatial_resolution: &'static str,
     pub attribution: &'static str,
-    pub citation: &'static str,
 
     pub time_start: DateTime<Utc>,
     pub time_end: Option<DateTime<Utc>>,
@@ -331,7 +330,6 @@ impl AnalysisRunConfig {
             "namme": self.dataset.name,
             "descritpion": self.dataset.description,
             "attribution": self.dataset.attribution,
-            "citation": self.dataset.citation,
             "time_domain": format!("{} to {}", self.dataset.time_start, end_date_string),
             "time_resolution": format!("{} hour", self.dataset.time_step.num_hours()),
             "spatial_domain": self.dataset.spatial_coverage,
