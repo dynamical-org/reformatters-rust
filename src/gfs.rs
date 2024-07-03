@@ -25,7 +25,7 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-small.zarr";
+const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -35,7 +35,7 @@ type E = f32; // element type
 
 static HOURLY_AWS_FORECAST_START: Lazy<DateTime<Utc>> =
     Lazy::new(|| Utc.with_ymd_and_hms(2021, 2, 27, 0, 0, 0).unwrap());
-
+const INIT_FREQUENCY_HOURS: i64 = 6;
 const EARLY_DATA_FREQUENCY_HOURS: u32 = 3;
 
 pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
@@ -379,8 +379,6 @@ impl DownloadBatch {
         let mut array =
             ndarray::stack(Axis(0), &array_views).expect("Array shapes must be stackable");
 
-        let b4 = array.slice(s![.., 0, 0]).to_owned();
-
         if needs_interpolation {
             let interpolator = ndarray_interp::interp1d::Interp1DBuilder::new(array)
                 .x(to_timestamps(&time_coordinates_to_download))
@@ -392,9 +390,6 @@ impl DownloadBatch {
                 .interp_array(&to_timestamps(&self.time_coordinates))
                 .unwrap();
         }
-
-        let after = array.slice(s![.., 0, 0]);
-        dbg!(b4, after);
 
         DownloadedBatch {
             array,
@@ -445,7 +440,8 @@ impl DownloadBatch {
     }
 }
 
-fn to_timestamps(times: &Vec<DateTime<Utc>>) -> Array1<E> {
+fn to_timestamps(times: &[DateTime<Utc>]) -> Array1<E> {
+    #[allow(clippy::cast_precision_loss)]
     Array1::from_iter(times.iter().map(|t| t.timestamp() as f32))
 }
 
@@ -460,8 +456,19 @@ async fn load_variable_from_file(
             return Ok(Array2::from_elem((721, 1440), E::NAN));
         }
         let local_data_dir = std::env::var("LOCAL_DATA_DIR")?;
-        let datetime_str = time_coordinate.format("%Y%m%d%H");
-        format!("{local_data_dir}/{data_variable_name}/gfs.0p25.{datetime_str}.f000.grib2")
+        // let date_str = time_coordinate.format("%Y%m%d");
+        // let lead_time_hour = i64::from(time_coordinate.hour()) % INIT_FREQUENCY_HOURS;
+        let lead_time_hour = i64::from(time_coordinate.hour()) % INIT_FREQUENCY_HOURS;
+        assert!(lead_time_hour >= 0);
+        assert!(lead_time_hour < 6);
+
+        let init_time = time_coordinate
+            - TimeDelta::try_hours(lead_time_hour).expect("lead time hours to be within 0 - 5");
+
+        let init_time_str = init_time.format("%Y%m%d%H");
+        format!(
+            "{local_data_dir}/{data_variable_name}/gfs.0p25.{init_time_str}.f{lead_time_hour:0>3}.grib2"
+        )
     } else {
         download_band(data_variable_name, time_coordinate, http_client).await?
     };
@@ -487,8 +494,7 @@ async fn download_band(
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<String> {
-    const INIT_FREQUENCY_HOURS: i64 = 6;
-    let lead_time_hour: i64 = i64::from(time_coordinate.hour()) % INIT_FREQUENCY_HOURS;
+    let lead_time_hour = i64::from(time_coordinate.hour()) % INIT_FREQUENCY_HOURS;
     assert!(lead_time_hour >= 0);
     assert!(lead_time_hour < 6);
 
