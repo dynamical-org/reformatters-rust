@@ -26,4 +26,5 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full", "tracing"] }
 tokio-util = { version = "0" }
 clap = { version = "4.5.7", features = ["derive"] }
-backon = "0.4.4"
+backon = "0"
+ndarray-interp = "0"

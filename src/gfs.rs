@@ -19,19 +19,24 @@ use futures::future::join_all;
 use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use itertools::Itertools;
-use ndarray::{s, Array2, Array3, Axis};
+use ndarray::{s, Array1, Array2, Array3, Axis};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
+const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0-small.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
 /// - make dimension objects which contain names, etc
 /// - make data variable enum which contains name, dimensions, chunking, units, grib index names, etc
 type E = f32; // element type
+
+static HOURLY_AWS_FORECAST_START: Lazy<DateTime<Utc>> =
+    Lazy::new(|| Utc.with_ymd_and_hms(2021, 2, 27, 0, 0, 0).unwrap());
+
+const EARLY_DATA_FREQUENCY_HOURS: u32 = 3;
 
 pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     id: "noaa-gfs-analysis-hourly",
@@ -40,10 +45,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
         "Historical weather data from the Global Forecast System (GFS) model operated by NOAA NCEP.",
     url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
     spatial_coverage: "Global",
-    spatial_resolution: "0.25 degrees (approx 20km)",
-    attribution: "NOAA NCEP GFS data processed by dynamical.org from NCAR and AWS archives.",
+    spatial_resolution: "0.25 degrees (~20km)",
+    attribution:
+        "NOAA NCEP GFS data processed by dynamical.org from NCAR and NOAA BDP AWS archives.",
 
-    time_start: Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap(),
+    time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: None,
     time_step: TimeDelta::try_hours(1).unwrap(),
     time_chunk_size: 40,
@@ -61,7 +67,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     data_dimensions: vec![
         DataDimension {
             name: "time",
-            long_name: "Timestamp",
+            long_name: "Time",
             units: "hours since 2015-01-15 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
@@ -141,6 +147,7 @@ pub async fn reformat(
     data_variable_name: String,
     time_start: DateTime<Utc>,
     time_end: DateTime<Utc>,
+    skip_metadata: bool,
     future_buffer_base_size: usize,
 ) -> Result<()> {
     let start = Instant::now();
@@ -152,9 +159,11 @@ pub async fn reformat(
     let http_client = http::client()?;
     let output_store = object_storage::output_store()?;
 
-    run_config
-        .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
-        .await?;
+    if !skip_metadata {
+        run_config
+            .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
+            .await?;
+    }
 
     let results = futures::stream::iter(download_batches)
         .map(|download_batch| download_batch.process(http_client.clone()))
@@ -249,10 +258,10 @@ fn get_run_config(
         ));
     }
 
-    // let now = Utc::now();
-    // if now > time_end {
-    //     return Err(anyhow!("End time {time_end} is before now ({now})"));
-    // }
+    let max_time_end = Utc::now() + TimeDelta::try_hours(6).unwrap();
+    if max_time_end < time_end {
+        return Err(anyhow!("End time {time_end} is too far in the future"));
+    }
 
     let time_coordinates = (0..u32::MAX)
         .scan(time_start - dataset.time_step, |time, _| {
@@ -298,13 +307,26 @@ impl AnalysisRunConfig {
 
 impl DownloadBatch {
     async fn process(self, http_client: http::Client) -> DownloadedBatch {
-        let load_file_futures = self.time_coordinates.iter().map(|time_coordinate| {
-            load_variable_from_file(
-                self.data_variable_name.as_str(),
-                *time_coordinate,
-                http_client.clone(),
-            )
-        });
+        let (needs_interpolation, time_coordinates_to_download) =
+            self.time_coordinates_to_download();
+
+        // filter time coords to 3 hourly
+        // load with filtered time coordinates
+        // x = filtered time coords (transformed into seconds since x)
+        // q = self.time_coordinates (transformed into seconds since x)
+        //
+
+        let load_file_futures =
+            time_coordinates_to_download
+                .clone()
+                .into_iter()
+                .map(|time_coordinate| {
+                    load_variable_from_file(
+                        self.data_variable_name.as_str(),
+                        time_coordinate,
+                        http_client.clone(),
+                    )
+                });
 
         let results = join_all(load_file_futures).await;
 
@@ -321,7 +343,25 @@ impl DownloadBatch {
             .map(ndarray::ArrayBase::view)
             .collect::<Vec<_>>();
 
-        let array = ndarray::stack(Axis(0), &array_views).expect("Array shapes must be stackable");
+        let mut array =
+            ndarray::stack(Axis(0), &array_views).expect("Array shapes must be stackable");
+
+        let b4 = array.slice(s![.., 0, 0]).to_owned();
+
+        if needs_interpolation {
+            let interpolator = ndarray_interp::interp1d::Interp1DBuilder::new(array)
+                .x(to_timestamps(&time_coordinates_to_download))
+                .strategy(ndarray_interp::interp1d::Linear::new())
+                .build()
+                .unwrap();
+
+            array = interpolator
+                .interp_array(&to_timestamps(&self.time_coordinates))
+                .unwrap();
+        }
+
+        let after = array.slice(s![.., 0, 0]);
+        dbg!(b4, after);
 
         DownloadedBatch {
             array,
@@ -330,6 +370,50 @@ impl DownloadBatch {
             time_chunk_index: self.time_chunk_index,
         }
     }
+
+    /// Add `EARLY_DATA_FREQUENCY - 1` time coordinates to the start and end of `self.time_coordinates`
+    fn time_coordinates_to_download(&self) -> (bool, Vec<DateTime<Utc>>) {
+        let first = self.time_coordinates.first().unwrap();
+        let last = self.time_coordinates.last().unwrap();
+        let time_step_hours: usize = self
+            .run_config
+            .dataset
+            .time_step
+            .num_hours()
+            .try_into()
+            .unwrap();
+
+        if first >= &HOURLY_AWS_FORECAST_START {
+            let needs_interpolation = false;
+            return (needs_interpolation, self.time_coordinates.clone());
+        }
+
+        let mut padded = self.time_coordinates.clone();
+
+        for hour in (1..EARLY_DATA_FREQUENCY_HOURS).step_by(time_step_hours) {
+            let coord = *first - TimeDelta::try_hours(hour.into()).unwrap();
+            padded.insert(0, coord);
+        }
+
+        for hour in (1..EARLY_DATA_FREQUENCY_HOURS).step_by(time_step_hours) {
+            let coord = *last + TimeDelta::try_hours(hour.into()).unwrap();
+            padded.push(coord);
+        }
+
+        let filtered_time_coordinates = padded
+            .into_iter()
+            .filter(|t| {
+                t > &HOURLY_AWS_FORECAST_START || t.hour() % EARLY_DATA_FREQUENCY_HOURS == 0
+            })
+            .collect_vec();
+
+        let needs_interpolation = true;
+        (needs_interpolation, filtered_time_coordinates)
+    }
+}
+
+fn to_timestamps(times: &Vec<DateTime<Utc>>) -> Array1<E> {
+    Array1::from_iter(times.iter().map(|t| t.timestamp() as f32))
 }
 
 async fn load_variable_from_file(
@@ -337,14 +421,17 @@ async fn load_variable_from_file(
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<Array2<E>> {
-    let file_path = if time_coordinate < Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap() {
+    let file_path = if time_coordinate < *HOURLY_AWS_FORECAST_START {
+        // Data is 3 hourly in this period
+        if time_coordinate.hour() % EARLY_DATA_FREQUENCY_HOURS != 0 {
+            return Ok(Array2::from_elem((721, 1440), E::NAN));
+        }
         let local_data_dir = std::env::var("LOCAL_DATA_DIR")?;
         let datetime_str = time_coordinate.format("%Y%m%d%H");
         format!("{local_data_dir}/{data_variable_name}/gfs.0p25.{datetime_str}.f000.grib2")
     } else {
         download_band(data_variable_name, time_coordinate, http_client).await?
     };
-    println!("{}", &file_path);
 
     let file_path_move = file_path.clone();
     let array = spawn_blocking(move || -> Result<Array2<E>> {
@@ -388,8 +475,6 @@ async fn download_band(
 
     let data_url = format!("{S3_BUCKET_HOST}/{data_path}");
     let index_url = format!("{data_url}.idx");
-
-    println!("{data_url}");
 
     let index_contents = http_client
         .get(&index_url)
