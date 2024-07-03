@@ -44,7 +44,7 @@ pub struct AnalysisDataset {
     pub attribution: &'static str,
 
     pub time_start: DateTime<Utc>,
-    pub time_end: Option<DateTime<Utc>>,
+    pub time_end: DateTime<Utc>,
     pub time_step: TimeDelta,
     pub time_chunk_size: usize,
 
@@ -69,6 +69,8 @@ pub struct AnalysisRunConfig {
     pub time_coordinates: Arc<Vec<DateTime<Utc>>>, // Arc because this struct is cloned often and this vec can be big
     pub latitude_coordinates: Vec<f64>,
     pub longitude_coordinates: Vec<f64>,
+    pub time_start: DateTime<Utc>,
+    pub time_end: DateTime<Utc>,
 }
 
 const WRITE_METADATA_TO_OBJECT_STORAGE: bool = true;
@@ -278,11 +280,6 @@ impl AnalysisRunConfig {
             shuffle: 1,
         };
 
-        let end_date_string = match self.dataset.time_end {
-            Some(date) => date.to_string(),
-            None => "Present".to_string(),
-        };
-
         for data_dimension in self.dataset.data_dimensions.clone() {
             let shape_size = match data_dimension.name {
                 "time" => time_shape_size,
@@ -329,7 +326,7 @@ impl AnalysisRunConfig {
             let end = match data_dimension.name {
                 "longitude" => self.dataset.longitude_end.to_string(),
                 "latitude" => self.dataset.latitude_end.to_string(),
-                "time" => end_date_string.clone(),
+                "time" => self.dataset.time_end.to_string(),
                 &_ => todo!(),
             };
 
@@ -354,7 +351,7 @@ impl AnalysisRunConfig {
             "name": self.dataset.name,
             "descritpion": self.dataset.description,
             "attribution": self.dataset.attribution,
-            "time_domain": format!("{} to {}", self.dataset.time_start, end_date_string),
+            "time_domain": format!("{} to {}", self.dataset.time_start, self.dataset.time_end),
             "time_resolution": format!("{} hour", self.dataset.time_step.num_hours()),
             "spatial_domain": self.dataset.spatial_coverage,
             "spatial_resolution": self.dataset.spatial_resolution

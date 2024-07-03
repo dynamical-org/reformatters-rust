@@ -50,7 +50,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
         "NOAA NCEP GFS data processed by dynamical.org from NCAR and NOAA BDP AWS archives.",
 
     time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
-    time_end: None,
+    time_end: Utc.with_ymd_and_hms(2024, 7, 1, 0, 0, 0).unwrap(),
     time_step: TimeDelta::try_hours(1).unwrap(),
     time_chunk_size: 40,
 
@@ -261,15 +261,17 @@ fn get_run_config(
         ));
     }
 
-    let max_time_end = Utc::now() + TimeDelta::try_hours(6).unwrap();
-    if max_time_end < time_end {
-        return Err(anyhow!("End time {time_end} is too far in the future"));
+    if dataset.time_end < time_end {
+        return Err(anyhow!(
+            "End time {time_end} is after dataset time {}",
+            dataset.time_end
+        ));
     }
 
     let time_coordinates = (0..u32::MAX)
-        .scan(time_start - dataset.time_step, |time, _| {
+        .scan(dataset.time_start - dataset.time_step, |time, _| {
             *time += dataset.time_step;
-            if *time < time_end {
+            if *time < dataset.time_end {
                 Some(*time)
             } else {
                 None
@@ -311,6 +313,8 @@ fn get_run_config(
         time_coordinates: Arc::new(time_coordinates),
         latitude_coordinates,
         longitude_coordinates,
+        time_start,
+        time_end,
     })
 }
 
@@ -333,6 +337,17 @@ impl AnalysisRunConfig {
                 data_variable_name: self.data_variable.name.to_string(),
                 time_coordinates: chunk_time_coordinates.copied().collect(),
                 time_chunk_index,
+            })
+            .filter(|download_batch| {
+                let download_batch_start_date = download_batch.time_coordinates.first().unwrap();
+                let download_batch_end_date = download_batch.time_coordinates.last().unwrap();
+                // If the download_batch_start_date is between the run_config's start and end date
+                // or the download_batch_end_date is between the run_config's start and end date
+                // then this is a download batch that we want to process
+                (download_batch_start_date >= &self.time_start
+                    && download_batch_start_date < &self.time_end)
+                    || (download_batch_end_date >= &self.time_start
+                        && download_batch_end_date < &self.time_end)
             })
             .collect())
     }
@@ -366,8 +381,14 @@ impl DownloadBatch {
         let arrays = results
             .into_iter()
             .map(|r| {
-                r.inspect_err(|e| eprintln!("Error getting chunk! {e:?}"))
-                    .unwrap_or_else(|_| Array2::from_elem((721, 1440), E::NAN))
+                r.inspect_err(|e| {
+                    eprintln!(
+                        "Error getting chunk {} - {}! {e:?}",
+                        self.time_coordinates.first().unwrap(),
+                        self.time_coordinates.last().unwrap()
+                    );
+                })
+                .unwrap_or_else(|_| Array2::from_elem((721, 1440), E::NAN))
             })
             .collect::<Vec<_>>();
 
