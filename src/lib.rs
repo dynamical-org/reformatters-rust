@@ -349,7 +349,7 @@ impl AnalysisRunConfig {
         let dataset_zattrs = json!({
             "id": self.dataset.id,
             "name": self.dataset.name,
-            "descritpion": self.dataset.description,
+            "description": self.dataset.description,
             "attribution": self.dataset.attribution,
             "time_domain": format!("{} to {}", self.dataset.time_start, self.dataset.time_end),
             "time_resolution": format!("{} hour", self.dataset.time_step.num_hours()),
