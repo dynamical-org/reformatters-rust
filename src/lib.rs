@@ -1,3 +1,4 @@
+pub mod binary_round;
 pub mod gfs;
 pub mod http;
 pub mod object_storage;

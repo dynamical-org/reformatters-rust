@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
+use crate::binary_round;
 use crate::do_upload;
 use crate::http;
 use crate::num_chunks;
@@ -40,7 +41,7 @@ const EARLY_DATA_FREQUENCY_HOURS: u32 = 3;
 
 pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     id: "noaa-gfs-analysis-hourly",
-    name: "GFS analysis, hourly",
+    name: "NOAA GFS analysis, hourly",
     description:
         "Historical weather data from the Global Forecast System (GFS) model operated by NOAA NCEP.",
     url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
@@ -177,7 +178,7 @@ pub async fn reformat(
         .map(ZarrChunkArray::compress)
         .buffer_unordered(future_buffer_base_size * 8)
         .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store.clone()))
-        .buffer_unordered(future_buffer_base_size * 2)
+        .buffer_unordered(future_buffer_base_size * 8)
         .collect::<Vec<_>>()
         .await;
 
@@ -392,25 +393,34 @@ impl DownloadBatch {
             })
             .collect::<Vec<_>>();
 
-        let array_views = arrays
-            .iter()
-            .map(ndarray::ArrayBase::view)
-            .collect::<Vec<_>>();
+        let array = spawn_blocking(move || {
+            let array_views = arrays
+                .iter()
+                .map(ndarray::ArrayBase::view)
+                .collect::<Vec<_>>();
 
-        let mut array =
-            ndarray::stack(Axis(0), &array_views).expect("Array shapes must be stackable");
+            let mut array =
+                ndarray::stack(Axis(0), &array_views).expect("Array shapes must be stackable");
 
-        if needs_interpolation {
-            let interpolator = ndarray_interp::interp1d::Interp1DBuilder::new(array)
-                .x(to_timestamps(&time_coordinates_to_download))
-                .strategy(ndarray_interp::interp1d::Linear::new())
-                .build()
-                .unwrap();
+            if needs_interpolation {
+                let interpolator = ndarray_interp::interp1d::Interp1DBuilder::new(array)
+                    .x(to_timestamps(&time_coordinates_to_download))
+                    .strategy(ndarray_interp::interp1d::Linear::new())
+                    .build()
+                    .unwrap();
 
-            array = interpolator
-                .interp_array(&to_timestamps(&self.time_coordinates))
-                .unwrap();
-        }
+                array = interpolator
+                    .interp_array(&to_timestamps(&self.time_coordinates))
+                    .unwrap();
+            }
+
+            // improve compression ratio by rounding to keep n mantissa bits, setting the rest to zeros
+            array.mapv_inplace(|v| binary_round::round(v, 10));
+
+            array
+        })
+        .await
+        .unwrap();
 
         DownloadedBatch {
             array,
@@ -698,6 +708,9 @@ impl ZarrChunkCompressed {
 
         let bytes: object_store::PutPayload = self.bytes.into();
 
+        // let put_result = do_upload(store.clone(), chunk_path.clone(), bytes.clone())
+        //     .await
+        //     .inspect_err(|e| println!("Upload error, chunk {chunk_index_name}, {e}"))?;
         let put_result =
             (|| async { do_upload(store.clone(), chunk_path.clone(), bytes.clone()).await })
                 .retry(&ExponentialBuilder::default())
