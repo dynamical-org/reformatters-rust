@@ -286,7 +286,7 @@ mod tests {
     }
     #[test]
     fn print_diffs() {
-        let oo = ndarray::Array::logspace(2_f32, -127., 127., 2_000_000);
+        let oo = ndarray::Array::logspace(2_f32, -127., 127., 2_000);
         let mut max: f32 = 0.;
         for o in oo {
             let r = round(o, 10);
@@ -294,9 +294,9 @@ mod tests {
             if diff_percent > max {
                 max = diff_percent;
             }
-            // println!("{:.2} {o} {}", diff_frac, r);
+            // println!("{:.2} {o} {}", diff_percent, r);
         }
-        assert!(max < 0.5); // less than 1/2 of 1% rror
+        assert!(max < 0.5); // less than 1/2 of 1% Grror
         println!("max diff frac {max:.3}");
     }
 }

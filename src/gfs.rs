@@ -57,17 +57,17 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: Utc.with_ymd_and_hms(2024, 7, 1, 0, 0, 0).unwrap(),
     time_step: TimeDelta::try_hours(1).unwrap(),
-    time_chunk_size: 40,
+    time_chunk_size: 120,
 
     longitude_start: -180.,
     longitude_end: 180.,
     longitude_step: 0.25,
-    longitude_chunk_size: 360,
+    longitude_chunk_size: 144,
 
     latitude_start: 90.,
     latitude_end: -90.,
     latitude_step: 0.25,
-    latitude_chunk_size: 361,
+    latitude_chunk_size: 145,
 
     data_dimensions: vec![
         DataDimension {
