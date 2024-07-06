@@ -13,6 +13,8 @@ struct Cli {
     /// Most recent timestamp to ingest (inclusive)
     time_end: DateTime<Utc>,
 
+    dest: String,
+
     /// Don't write metadata, just write chunks
     skip_metadata: Option<bool>,
 
@@ -28,6 +30,7 @@ async fn main() -> Result<()> {
         cli.variable,
         cli.time_start,
         cli.time_end,
+        cli.dest,
         cli.skip_metadata.unwrap_or(false),
         cli.future_buffer_base_size.unwrap_or(3),
     )

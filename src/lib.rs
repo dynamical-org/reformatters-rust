@@ -2,7 +2,7 @@ pub mod binary_round;
 pub mod gfs;
 pub mod http;
 pub mod object_storage;
-use std::{collections::HashMap, error::Error, fs, io::Write, mem::size_of_val};
+use std::{collections::HashMap, error::Error, mem::size_of_val};
 
 use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
@@ -74,8 +74,6 @@ pub struct AnalysisRunConfig {
     pub time_end: DateTime<Utc>,
 }
 
-const WRITE_METADATA_TO_OBJECT_STORAGE: bool = true;
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -91,22 +89,17 @@ async fn write_bytes(
     object_store: ObjectStore,
     dest_root_path: &str,
 ) -> Result<()> {
-    if WRITE_METADATA_TO_OBJECT_STORAGE {
-        let payload: PutPayload = bytes.into();
-        (|| async {
-            do_upload(
-                object_store.clone(),
-                format!("{dest_root_path}/{file_path}"),
-                payload.clone(),
-            )
-            .await
-        })
-        .retry(&ExponentialBuilder::default())
-        .await?;
-    } else {
-        let mut file = fs::File::create(file_path)?;
-        file.write_all(bytes.as_slice())?;
-    }
+    let payload: PutPayload = bytes.into();
+    (|| async {
+        do_upload(
+            object_store.clone(),
+            format!("{dest_root_path}/{file_path}"),
+            payload.clone(),
+        )
+        .await
+    })
+    .retry(&ExponentialBuilder::default())
+    .await?;
 
     Ok(())
 }
@@ -118,25 +111,13 @@ async fn write_json(
     dest_root_path: &str,
 ) -> Result<()> {
     let json_string = serde_json::to_string_pretty(json_value)?;
-    if WRITE_METADATA_TO_OBJECT_STORAGE {
-        let payload: PutPayload = json_string.into();
-        (|| async {
-            do_upload(
-                object_store.clone(),
-                format!("{dest_root_path}/{file_path}"),
-                payload.clone(),
-            )
-            .await
-        })
-        .retry(&ExponentialBuilder::default())
-        .await?;
-    } else {
-        let bytes: &[u8] = json_string.as_bytes();
-        let mut file = fs::File::create(file_path)?;
-        file.write_all(bytes)?;
-    }
-
-    Ok(())
+    write_bytes(
+        file_path,
+        json_string.as_bytes().to_vec(),
+        object_store,
+        dest_root_path,
+    )
+    .await
 }
 
 fn to_value<T: Serialize>(value: &T) -> serde_json::Value {
@@ -189,9 +170,6 @@ async fn write_array_metadata(
         to_value(&zarr_attribute_json),
     );
 
-    if !WRITE_METADATA_TO_OBJECT_STORAGE {
-        fs::create_dir(field_name).expect("Error writing zarr metadata");
-    }
     write_json(
         &format!("{field_name}/.zarray"),
         zarr_array_json,

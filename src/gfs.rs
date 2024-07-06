@@ -3,11 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
-use crate::binary_round;
+use crate::{binary_round, object_storage};
 use crate::do_upload;
 use crate::http;
 use crate::num_chunks;
-use crate::object_storage::{self, ObjectStore};
 use crate::AnalysisDataset;
 use crate::AnalysisRunConfig;
 use crate::DataDimension;
@@ -21,6 +20,7 @@ use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use itertools::Itertools;
 use ndarray::{s, Array1, Array2, Array3, Axis};
+use object_storage::ObjectStore;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::task::spawn_blocking;
@@ -152,6 +152,7 @@ pub async fn reformat(
     data_variable_name: String,
     time_start: DateTime<Utc>,
     time_end: DateTime<Utc>,
+    dest: String,
     skip_metadata: bool,
     future_buffer_base_size: usize,
 ) -> Result<()> {
@@ -162,14 +163,15 @@ pub async fn reformat(
     let download_batches = run_config.get_download_batches()?;
 
     let http_client = http::client()?;
-    let output_store = object_storage::output_store()?;
+
+    let object_store = object_storage::get_object_store(dest)?;
 
     if !skip_metadata {
         run_config
-            .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
+            .write_zarr_metadata(object_store.clone(), DEST_ROOT_PATH)
             .await?;
         run_config
-            .write_dimension_coordinates(output_store.clone(), DEST_ROOT_PATH)
+            .write_dimension_coordinates(object_store.clone(), DEST_ROOT_PATH)
             .await?;
     }
 
@@ -181,7 +183,7 @@ pub async fn reformat(
         .flat_map(futures::stream::iter)
         .map(ZarrChunkArray::compress)
         .buffer_unordered(future_buffer_base_size * 8)
-        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store.clone()))
+        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(object_store.clone()))
         .buffer_unordered(future_buffer_base_size * 8)
         .collect::<Vec<_>>()
         .await;

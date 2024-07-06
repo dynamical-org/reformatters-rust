@@ -28,3 +28,4 @@ tokio-util = { version = "0" }
 clap = { version = "4.5.7", features = ["derive"] }
 backon = "0"
 ndarray-interp = "0"
+url = "2.5.2"

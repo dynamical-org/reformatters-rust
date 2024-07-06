@@ -1,36 +1,40 @@
-use anyhow::Result;
 use std::sync::Arc;
+
+use anyhow::{anyhow, bail, Result};
+use object_store::{aws::AmazonS3Builder, local::LocalFileSystem};
+use url::Url;
 
 pub type ObjectStore = Arc<dyn object_store::ObjectStore>;
 pub type PutPayload = object_store::PutPayload;
 pub type PutResult = object_store::PutResult;
 
-pub fn output_store() -> Result<ObjectStore> {
-    let mut store_builder = object_store::aws::AmazonS3Builder::from_env()
-        .with_bucket_name(std::env::var("OUTPUT_STORE_BUCKET")?)
-        .with_access_key_id(first_env_var(
-            "OUTPUT_STORE_ACCESS_KEY_ID",
-            "AWS_ACCESS_KEY_ID",
-        )?)
-        .with_secret_access_key(first_env_var(
-            "OUTPUT_STORE_SECRET_ACCESS_KEY",
-            "AWS_SECRET_ACCESS_KEY",
-        )?);
-
-    if let Ok(session_token) = first_env_var("OUTPUT_STORE_SESSION_TOKEN", "AWS_SESSION_TOKEN") {
-        store_builder = store_builder.with_token(session_token);
+pub fn get_object_store(dest: String) -> Result<ObjectStore> {
+    let url = Url::parse(&dest)?;
+    println!("URL: {:?}", url);
+    match url.scheme() {
+        "file" => {
+            if url.host().is_some() {
+                bail!("Unsupported file url. Expected no host: {}", url.as_str());
+            }
+            Ok(Arc::new(LocalFileSystem::new()))
+        }
+        "s3" => {
+            let bucket_name = url.host().ok_or(anyhow!("Invalid bucket_name"))?;
+            let store = AmazonS3Builder::from_env()
+                .with_bucket_name(bucket_name.to_string())
+                .build()?;
+            Ok(Arc::new(store))
+        }
+        "gcs" => {
+            bail!("GCS not implemented")
+        }
+        "azure" => {
+            bail!("Azure not implemented")
+        }
+        _ => bail!("Unsupported url. Try file:/foo, s3://bucket"),
     }
-    if let Ok(endpoint) = std::env::var("OUTPUT_STORE_ENDPOINT") {
-        store_builder = store_builder.with_endpoint(endpoint);
-    }
-    if let Ok(region) = first_env_var("OUTPUT_STORE_REGION", "AWS_DEFAULT_REGION") {
-        store_builder = store_builder.with_region(region);
-    }
-
-    let store = store_builder.build()?;
-    Ok(Arc::new(store))
 }
 
-fn first_env_var(var1: &str, var2: &str) -> Result<String> {
-    Ok(std::env::var(var1).or_else(|_| std::env::var(var2))?)
-}
+// fn first_env_var(var1: &str, var2: &str) -> Result<String> {
+//     Ok(std::env::var(var1).or_else(|_| std::env::var(var2))?)
+// }
