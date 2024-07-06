@@ -1,14 +1,14 @@
 pub mod binary_round;
 pub mod gfs;
 pub mod http;
-pub mod object_storage;
+pub mod output;
 use std::{collections::HashMap, error::Error, mem::size_of_val};
 
 use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
-use object_storage::{ObjectStore, PutPayload, PutResult};
+use output::{Storage, PutPayload, PutResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -86,7 +86,7 @@ fn num_chunks(size: usize, chunk_size: usize) -> usize {
 async fn write_bytes(
     file_path: &str,
     bytes: Vec<u8>,
-    object_store: ObjectStore,
+    object_store: Storage,
     dest_root_path: &str,
 ) -> Result<()> {
     let payload: PutPayload = bytes.into();
@@ -107,7 +107,7 @@ async fn write_bytes(
 async fn write_json(
     file_path: &str,
     json_value: &Value,
-    object_store: ObjectStore,
+    object_store: Storage,
     dest_root_path: &str,
 ) -> Result<()> {
     let json_string = serde_json::to_string_pretty(json_value)?;
@@ -161,7 +161,7 @@ async fn write_array_metadata(
     mut zmetadata: HashMap<String, serde_json::Value>,
     zarr_array_json: &serde_json::Value,
     zarr_attribute_json: &serde_json::Value,
-    store: ObjectStore,
+    store: Storage,
     dest_root_path: &str,
 ) -> Result<HashMap<String, serde_json::Value>> {
     zmetadata.insert(format!("{field_name}/.zarray"), to_value(&zarr_array_json));
@@ -194,7 +194,7 @@ impl AnalysisRunConfig {
     #[allow(clippy::cast_sign_loss)]
     pub async fn write_zarr_metadata(
         &self,
-        store: ObjectStore,
+        store: Storage,
         dest_root_path: &str,
     ) -> Result<()> {
         let data_variable_compressor_metadata = ZarrCompressorMetadata {
@@ -354,7 +354,7 @@ impl AnalysisRunConfig {
 
     pub async fn write_dimension_coordinates(
         &self,
-        store: ObjectStore,
+        store: Storage,
         dest_root_path: &str,
     ) -> Result<()> {
         let time_values: Vec<i64> = self
@@ -396,7 +396,7 @@ impl AnalysisRunConfig {
 }
 
 pub async fn do_upload(
-    store: ObjectStore,
+    store: Storage,
     chunk_path: String,
     bytes: PutPayload,
 ) -> Result<PutResult> {

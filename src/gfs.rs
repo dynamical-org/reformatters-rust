@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
-use crate::{binary_round, object_storage};
+use crate::{binary_round, output};
 use crate::do_upload;
 use crate::http;
 use crate::num_chunks;
@@ -20,7 +20,7 @@ use futures::stream::StreamExt;
 use futures::TryStreamExt;
 use itertools::Itertools;
 use ndarray::{s, Array1, Array2, Array3, Axis};
-use object_storage::ObjectStore;
+use output::Storage;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::task::spawn_blocking;
@@ -164,7 +164,7 @@ pub async fn reformat(
 
     let http_client = http::client()?;
 
-    let object_store = object_storage::get_object_store(dest)?;
+    let object_store = output::get_object_store(&dest)?;
 
     if !skip_metadata {
         run_config
@@ -692,7 +692,7 @@ impl ZarrChunkArray {
 }
 
 impl ZarrChunkCompressed {
-    async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
+    async fn upload(self, store: Storage) -> Result<ZarrChunkUploadInfo> {
         let upload_start_time = Instant::now();
 
         let data_dimension_names: Vec<&str> = self
