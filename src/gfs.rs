@@ -26,7 +26,11 @@ use regex::Regex;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
+
+// if using dynamical.s3.source.coop endpoint
 const DEST_ROOT_PATH: &str = "analysis-hourly/v0.1.0.zarr";
+// if using standard s3 source coop access with session token
+// const DEST_ROOT_PATH: &str = "dynamical/gfs/analysis-hourly/v0.1.0.zarr";
 
 /// Dataset config object todos
 /// - incorporate element type into object
@@ -708,9 +712,6 @@ impl ZarrChunkCompressed {
 
         let bytes: object_store::PutPayload = self.bytes.into();
 
-        // let put_result = do_upload(store.clone(), chunk_path.clone(), bytes.clone())
-        //     .await
-        //     .inspect_err(|e| println!("Upload error, chunk {chunk_index_name}, {e}"))?;
         let put_result =
             (|| async { do_upload(store.clone(), chunk_path.clone(), bytes.clone()).await })
                 .retry(&ExponentialBuilder::default())
