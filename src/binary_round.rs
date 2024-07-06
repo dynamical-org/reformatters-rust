@@ -20,7 +20,7 @@ pub fn round(value: f32, keep_mantissa_bits: u32) -> f32 {
     let drop_bits = MANTISSA_BITS - keep_mantissa_bits;
 
     // Extract portions of the number's bits
-    // If rounding mantissa to the n-th place (ie n == keep_bits_mantissa):
+    // Rounding mantissa to the n-th place (ie n == keep_bits_mantissa):
     let sign = bits & SIGN_MASK;
     let mut exponent = bits & EXPONENT_MASK;
     let mut mantissa = bits & MANTISSA_MASK;
@@ -28,6 +28,8 @@ pub fn round(value: f32, keep_mantissa_bits: u32) -> f32 {
     let half_bit = bits & (1 << (drop_bits - 1)); // n+1 th - the bit directly following round bit
     let sticky_bits = bits & trailing_1s(drop_bits - 1); // nth + 2+ - the rest of the bits after half bit
 
+    // Via the general rule at the bottom of this post
+    // https://angularindepth.com/posts/1017/how-to-round-binary-numbers
     mantissa = match (half_bit == 0, sticky_bits == 0) {
         (true, _) => round_down(mantissa, drop_bits),
         (false, false) => round_up(mantissa, drop_bits),
@@ -40,7 +42,7 @@ pub fn round(value: f32, keep_mantissa_bits: u32) -> f32 {
         mantissa &= MANTISSA_MASK; // zero out overflowed bits
 
         // if exponent overflows, return infinity
-        // all 1s exponent has a special meaning, so it's also invalid as a numberic value
+        // all 1s exponent has a special meaning, so it's also invalid as a numeric value
         if exponent >= EXPONENT_MASK {
             let sign_is_positive = sign == 0; // zero means positive, 1 means negative
             return if sign_is_positive {
@@ -67,7 +69,7 @@ fn round_up(value: u32, drop_bits: u32) -> u32 {
 /// Tie breaking round using the "ties to even" logic.
 /// See <https://en.wikipedia.org/wiki/IEEE_754#Roundings_to_nearest>
 fn round_to_even(value: u32, drop_bits: u32, round_bit: u32) -> u32 {
-    // if bit we're rounding to is 0, then rounding up with make it 1 (odd)
+    // if bit we're rounding to is already 0, then rounding up would make it 1 (odd)
     // so we round down and leave it zero (even).
     if round_bit == 0 {
         round_down(value, drop_bits)
