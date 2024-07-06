@@ -10,7 +10,7 @@ pub type PutPayload = object_store::PutPayload;
 pub type PutResult = object_store::PutResult;
 
 pub fn get_object_store(dest: &str) -> Result<Storage> {
-    let url = Url::parse(&dest)?;
+    let url = Url::parse(dest)?;
     println!("URL: {url}");
     match url.scheme() {
         "file" => {
