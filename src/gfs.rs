@@ -3,15 +3,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cmp::min, collections::HashMap};
 
-use crate::binary_round;
 use crate::do_upload;
 use crate::http;
 use crate::num_chunks;
-use crate::object_storage::{self, ObjectStore};
 use crate::AnalysisDataset;
 use crate::AnalysisRunConfig;
 use crate::DataDimension;
 use crate::DataVariable;
+use crate::{binary_round, output};
 pub use anyhow::{anyhow, Result};
 use backon::ExponentialBuilder;
 use backon::Retryable;
@@ -22,6 +21,7 @@ use futures::TryStreamExt;
 use itertools::Itertools;
 use ndarray::{s, Array1, Array2, Array3, Axis};
 use once_cell::sync::Lazy;
+use output::Storage;
 use regex::Regex;
 use tokio::task::spawn_blocking;
 
@@ -57,7 +57,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
     time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
     time_end: Utc.with_ymd_and_hms(2024, 7, 1, 0, 0, 0).unwrap(),
     time_step: TimeDelta::try_hours(1).unwrap(),
-    time_chunk_size: 120,
+    time_chunk_size: 160,
 
     longitude_start: -180.,
     longitude_end: 180.,
@@ -152,8 +152,8 @@ pub async fn reformat(
     data_variable_name: String,
     time_start: DateTime<Utc>,
     time_end: DateTime<Utc>,
+    destination: String,
     skip_metadata: bool,
-    future_buffer_base_size: usize,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -162,27 +162,28 @@ pub async fn reformat(
     let download_batches = run_config.get_download_batches()?;
 
     let http_client = http::client()?;
-    let output_store = object_storage::output_store()?;
+
+    let object_store = output::get_object_store(&destination)?;
 
     if !skip_metadata {
         run_config
-            .write_zarr_metadata(output_store.clone(), DEST_ROOT_PATH)
+            .write_zarr_metadata(object_store.clone(), DEST_ROOT_PATH)
             .await?;
         run_config
-            .write_dimension_coordinates(output_store.clone(), DEST_ROOT_PATH)
+            .write_dimension_coordinates(object_store.clone(), DEST_ROOT_PATH)
             .await?;
     }
 
     let results = futures::stream::iter(download_batches)
         .map(|download_batch| download_batch.process(http_client.clone()))
-        .buffer_unordered(future_buffer_base_size)
+        .buffer_unordered(1)
         .map(DownloadedBatch::zarr_array_chunks)
-        .buffer_unordered(future_buffer_base_size * 8)
+        .buffer_unordered(2)
         .flat_map(futures::stream::iter)
         .map(ZarrChunkArray::compress)
-        .buffer_unordered(future_buffer_base_size * 8)
-        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(output_store.clone()))
-        .buffer_unordered(future_buffer_base_size * 8)
+        .buffer_unordered(2)
+        .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(object_store.clone()))
+        .buffer_unordered(2)
         .collect::<Vec<_>>()
         .await;
 
@@ -419,7 +420,7 @@ impl DownloadBatch {
             }
 
             // improve compression ratio by rounding to keep n mantissa bits, setting the rest to zeros
-            array.mapv_inplace(|v| binary_round::round(v, 10));
+            array.mapv_inplace(|v| binary_round::round(v, 9));
 
             array
         })
@@ -613,6 +614,8 @@ impl DownloadedBatch {
 
             let lat_chunk_size = self.run_config.dataset.latitude_chunk_size;
             let lon_chunk_size = self.run_config.dataset.longitude_chunk_size;
+            let time_chunk_size = self.run_config.dataset.time_chunk_size;
+            assert_eq!(*time_size, time_chunk_size);
 
             let chunk_i_tuples = (0..num_chunks(*lat_size, lat_chunk_size))
                 .cartesian_product(0..num_chunks(*lon_size, lon_chunk_size));
@@ -646,7 +649,7 @@ impl DownloadedBatch {
                         array: chunk,
                     }
                 })
-                .collect::<Vec<_>>()
+                .collect_vec()
         })
         .await
         .unwrap()
@@ -690,7 +693,7 @@ impl ZarrChunkArray {
 }
 
 impl ZarrChunkCompressed {
-    async fn upload(self, store: ObjectStore) -> Result<ZarrChunkUploadInfo> {
+    async fn upload(self, store: Storage) -> Result<ZarrChunkUploadInfo> {
         let upload_start_time = Instant::now();
 
         let data_dimension_names: Vec<&str> = self
@@ -728,7 +731,7 @@ impl ZarrChunkCompressed {
         #[allow(clippy::cast_precision_loss)]
         Ok(ZarrChunkUploadInfo {
             run_config: self.run_config,
-            data_variable_name: self.data_variable_name.clone(),
+            data_variable_name: self.data_variable_name,
             time_chunk_index: self.time_chunk_index,
             longitude_chunk_index: self.longitude_chunk_index,
             latitude_chunk_index: self.latitude_chunk_index,

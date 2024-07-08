@@ -1,14 +1,14 @@
 pub mod binary_round;
 pub mod gfs;
 pub mod http;
-pub mod object_storage;
-use std::{collections::HashMap, error::Error, fs, io::Write, mem::size_of_val};
+pub mod output;
+use std::{collections::HashMap, error::Error, mem::size_of_val};
 
 use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
-use object_storage::{ObjectStore, PutPayload, PutResult};
+use output::{Storage, PutPayload, PutResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -74,8 +74,6 @@ pub struct AnalysisRunConfig {
     pub time_end: DateTime<Utc>,
 }
 
-const WRITE_METADATA_TO_OBJECT_STORAGE: bool = true;
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -88,25 +86,20 @@ fn num_chunks(size: usize, chunk_size: usize) -> usize {
 async fn write_bytes(
     file_path: &str,
     bytes: Vec<u8>,
-    object_store: ObjectStore,
+    object_store: Storage,
     dest_root_path: &str,
 ) -> Result<()> {
-    if WRITE_METADATA_TO_OBJECT_STORAGE {
-        let payload: PutPayload = bytes.into();
-        (|| async {
-            do_upload(
-                object_store.clone(),
-                format!("{dest_root_path}/{file_path}"),
-                payload.clone(),
-            )
-            .await
-        })
-        .retry(&ExponentialBuilder::default())
-        .await?;
-    } else {
-        let mut file = fs::File::create(file_path)?;
-        file.write_all(bytes.as_slice())?;
-    }
+    let payload: PutPayload = bytes.into();
+    (|| async {
+        do_upload(
+            object_store.clone(),
+            format!("{dest_root_path}/{file_path}"),
+            payload.clone(),
+        )
+        .await
+    })
+    .retry(&ExponentialBuilder::default())
+    .await?;
 
     Ok(())
 }
@@ -114,29 +107,17 @@ async fn write_bytes(
 async fn write_json(
     file_path: &str,
     json_value: &Value,
-    object_store: ObjectStore,
+    object_store: Storage,
     dest_root_path: &str,
 ) -> Result<()> {
     let json_string = serde_json::to_string_pretty(json_value)?;
-    if WRITE_METADATA_TO_OBJECT_STORAGE {
-        let payload: PutPayload = json_string.into();
-        (|| async {
-            do_upload(
-                object_store.clone(),
-                format!("{dest_root_path}/{file_path}"),
-                payload.clone(),
-            )
-            .await
-        })
-        .retry(&ExponentialBuilder::default())
-        .await?;
-    } else {
-        let bytes: &[u8] = json_string.as_bytes();
-        let mut file = fs::File::create(file_path)?;
-        file.write_all(bytes)?;
-    }
-
-    Ok(())
+    write_bytes(
+        file_path,
+        json_string.as_bytes().to_vec(),
+        object_store,
+        dest_root_path,
+    )
+    .await
 }
 
 fn to_value<T: Serialize>(value: &T) -> serde_json::Value {
@@ -180,7 +161,7 @@ async fn write_array_metadata(
     mut zmetadata: HashMap<String, serde_json::Value>,
     zarr_array_json: &serde_json::Value,
     zarr_attribute_json: &serde_json::Value,
-    store: ObjectStore,
+    store: Storage,
     dest_root_path: &str,
 ) -> Result<HashMap<String, serde_json::Value>> {
     zmetadata.insert(format!("{field_name}/.zarray"), to_value(&zarr_array_json));
@@ -189,9 +170,6 @@ async fn write_array_metadata(
         to_value(&zarr_attribute_json),
     );
 
-    if !WRITE_METADATA_TO_OBJECT_STORAGE {
-        fs::create_dir(field_name).expect("Error writing zarr metadata");
-    }
     write_json(
         &format!("{field_name}/.zarray"),
         zarr_array_json,
@@ -216,7 +194,7 @@ impl AnalysisRunConfig {
     #[allow(clippy::cast_sign_loss)]
     pub async fn write_zarr_metadata(
         &self,
-        store: ObjectStore,
+        store: Storage,
         dest_root_path: &str,
     ) -> Result<()> {
         let data_variable_compressor_metadata = ZarrCompressorMetadata {
@@ -376,7 +354,7 @@ impl AnalysisRunConfig {
 
     pub async fn write_dimension_coordinates(
         &self,
-        store: ObjectStore,
+        store: Storage,
         dest_root_path: &str,
     ) -> Result<()> {
         let time_values: Vec<i64> = self
@@ -418,7 +396,7 @@ impl AnalysisRunConfig {
 }
 
 pub async fn do_upload(
-    store: ObjectStore,
+    store: Storage,
     chunk_path: String,
     bytes: PutPayload,
 ) -> Result<PutResult> {
