@@ -176,14 +176,14 @@ pub async fn reformat(
 
     let results = futures::stream::iter(download_batches)
         .map(|download_batch| download_batch.process(http_client.clone()))
-        .buffer_unordered(1)
-        .map(DownloadedBatch::zarr_array_chunks)
         .buffer_unordered(2)
+        .map(DownloadedBatch::zarr_array_chunks)
+        .buffer_unordered(30)
         .flat_map(futures::stream::iter)
         .map(ZarrChunkArray::compress)
-        .buffer_unordered(2)
+        .buffer_unordered(30)
         .map(|zarr_chunk_compressed| zarr_chunk_compressed.upload(object_store.clone()))
-        .buffer_unordered(2)
+        .buffer_unordered(30)
         .collect::<Vec<_>>()
         .await;
 
@@ -361,6 +361,12 @@ impl AnalysisRunConfig {
 
 impl DownloadBatch {
     async fn process(self, http_client: http::Client) -> DownloadedBatch {
+        println!(
+            "Starting to process {} to {}",
+            self.time_coordinates.first().unwrap(),
+            self.time_coordinates.last().unwrap()
+        );
+
         let (needs_interpolation, time_coordinates_to_download) =
             self.time_coordinates_to_download();
 
@@ -615,7 +621,6 @@ impl DownloadedBatch {
             let lat_chunk_size = self.run_config.dataset.latitude_chunk_size;
             let lon_chunk_size = self.run_config.dataset.longitude_chunk_size;
             let time_chunk_size = self.run_config.dataset.time_chunk_size;
-            assert_eq!(*time_size, time_chunk_size);
 
             let chunk_i_tuples = (0..num_chunks(*lat_size, lat_chunk_size))
                 .cartesian_product(0..num_chunks(*lon_size, lon_chunk_size));
@@ -623,8 +628,10 @@ impl DownloadedBatch {
             chunk_i_tuples
                 .map(|(lat_chunk_i, lon_chunk_i)| {
                     // create an array the size of a full chunk and fill with nan
-                    let mut chunk =
-                        Array3::from_elem([*time_size, lat_chunk_size, lon_chunk_size], E::NAN);
+                    let mut chunk = Array3::from_elem(
+                        [time_chunk_size, lat_chunk_size, lon_chunk_size],
+                        E::NAN,
+                    );
 
                     let lat_start = lat_chunk_i * lat_chunk_size;
                     let lat_stop = min(lat_start + lat_chunk_size, *lat_size);
@@ -633,7 +640,11 @@ impl DownloadedBatch {
 
                     // write available data into the correct portion of the chunk array
                     chunk
-                        .slice_mut(s![.., ..(lat_stop - lat_start), ..(lon_stop - lon_start)])
+                        .slice_mut(s![
+                            ..*time_size,
+                            ..(lat_stop - lat_start),
+                            ..(lon_stop - lon_start)
+                        ])
                         .assign(&self.array.slice(s![
                             ..,
                             lat_start..lat_stop,
