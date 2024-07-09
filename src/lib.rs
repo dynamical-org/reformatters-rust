@@ -8,7 +8,7 @@ use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::future::join_all;
-use output::{Storage, PutPayload, PutResult};
+use output::{PutPayload, PutResult, Storage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -139,7 +139,7 @@ struct ZarrFilterMetadata {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ZarrArrayMetadata {
     chunks: Vec<usize>,
-    compressor: ZarrCompressorMetadata,
+    compressor: Option<ZarrCompressorMetadata>,
     dtype: &'static str,
     fill_value: Option<&'static str>,
     filters: Option<Vec<ZarrFilterMetadata>>,
@@ -150,7 +150,16 @@ struct ZarrArrayMetadata {
 
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct ZarrAttributeMetadata {
+struct ZarrVariableAttributeMetadata {
+    _ARRAY_DIMENSIONS: Vec<&'static str>,
+    long_name: &'static str,
+    units: &'static str,
+    grid_mapping: &'static str,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ZarrDimensionAttributeMetadata {
     _ARRAY_DIMENSIONS: Vec<&'static str>,
     long_name: &'static str,
     units: &'static str,
@@ -192,11 +201,7 @@ impl AnalysisRunConfig {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_sign_loss)]
-    pub async fn write_zarr_metadata(
-        &self,
-        store: Storage,
-        dest_root_path: &str,
-    ) -> Result<()> {
+    pub async fn write_zarr_metadata(&self, store: Storage, dest_root_path: &str) -> Result<()> {
         let data_variable_compressor_metadata = ZarrCompressorMetadata {
             blocksize: 0,
             clevel: 5,
@@ -225,7 +230,7 @@ impl AnalysisRunConfig {
                     self.dataset.longitude_chunk_size,
                 ]
                 .to_vec(),
-                compressor: data_variable_compressor_metadata.clone(),
+                compressor: Some(data_variable_compressor_metadata.clone()),
                 dtype: data_variable.dtype,
                 fill_value: Some(fill_value),
                 filters: None,
@@ -234,10 +239,11 @@ impl AnalysisRunConfig {
                 zarr_format,
             };
 
-            let zarr_attribute_metadata = ZarrAttributeMetadata {
+            let zarr_attribute_metadata = ZarrVariableAttributeMetadata {
                 _ARRAY_DIMENSIONS: ["time", "latitude", "longitude"].to_vec(),
                 long_name: data_variable.long_name,
                 units: data_variable.units,
+                grid_mapping: "spatial_ref",
             };
 
             zmetadata = write_array_metadata(
@@ -274,7 +280,7 @@ impl AnalysisRunConfig {
 
             let zarr_array_metadata = ZarrArrayMetadata {
                 chunks: [shape_size].to_vec(),
-                compressor: data_dimension_compressor_metadata.clone(),
+                compressor: Some(data_dimension_compressor_metadata.clone()),
                 dtype: data_dimension.dtype,
                 fill_value,
                 filters: None,
@@ -283,7 +289,7 @@ impl AnalysisRunConfig {
                 zarr_format,
             };
 
-            let zarr_attribute_metadata = ZarrAttributeMetadata {
+            let zarr_attribute_metadata = ZarrDimensionAttributeMetadata {
                 _ARRAY_DIMENSIONS: [data_dimension.name].to_vec(),
                 long_name: data_dimension.long_name,
                 units: data_dimension.units,
@@ -324,6 +330,42 @@ impl AnalysisRunConfig {
             )
             .await?;
         }
+
+        // For rioxarray support
+        let spatial_ref_array_metadata = ZarrArrayMetadata {
+            chunks: [].to_vec(),
+            compressor: None,
+            dtype: "<i8",
+            fill_value: None,
+            filters: None,
+            order: "C",
+            shape: [].to_vec(),
+            zarr_format: 2,
+        };
+        let spatial_ref_attribute_metadata = json!({
+            "_ARRAY_DIMENSIONS": [],
+            "crs_wkt": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]",
+            "geographic_crs_name": "WGS 84",
+            "grid_mapping_name": "latitude_longitude",
+            "horizontal_datum_name": "World Geodetic System 1984",
+            "inverse_flattening": 298.257_223_563,
+            "longitude_of_prime_meridian": 0.0,
+            "prime_meridian_name": "Greenwich",
+            "reference_ellipsoid_name": "WGS 84",
+            "semi_major_axis": 6_378_137.0,
+            "semi_minor_axis": 6_356_752.314_245_179,
+            "spatial_ref": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]"
+
+        });
+        zmetadata = write_array_metadata(
+            "spatial_ref",
+            zmetadata.clone(),
+            &to_value(&spatial_ref_array_metadata),
+            &spatial_ref_attribute_metadata,
+            store.clone(),
+            dest_root_path,
+        )
+        .await?;
 
         let dataset_zattrs = json!({
             "id": self.dataset.id,
@@ -384,10 +426,14 @@ impl AnalysisRunConfig {
             dest_root_path,
         );
 
+        let spatial_ref_coords_future =
+            write_bytes("spatial_ref/0", [0].to_vec(), store.clone(), dest_root_path);
+
         join_all([
             time_coords_future,
             latitude_coords_future,
             longitude_coords_future,
+            spatial_ref_coords_future,
         ])
         .await;
 
@@ -395,11 +441,7 @@ impl AnalysisRunConfig {
     }
 }
 
-pub async fn do_upload(
-    store: Storage,
-    chunk_path: String,
-    bytes: PutPayload,
-) -> Result<PutResult> {
+pub async fn do_upload(store: Storage, chunk_path: String, bytes: PutPayload) -> Result<PutResult> {
     let mut put_result_result = store.put(&chunk_path.into(), bytes).await;
 
     // A little nonsense to ignore deeply nested error if the ETag isn't
