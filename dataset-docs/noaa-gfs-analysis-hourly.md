@@ -9,9 +9,9 @@ Historical weather data from the Global Forecast System (GFS) model operated by 
 - **Time domain**: 2015-01-15 00:00:00 UTC to 2024-07-01 00:00:00 UTC
 - **Time resolution**: 1 hour
 
-URL: `https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr?email=option@email.com`
+URL: `https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr?email=optional@email.com`
 
-_Email optional: registration not required. Providing your email as a query param helps us understand usage and impact to keep dynamical.org supported for the long-term. For catalog updates follow [here](https://dynamical.org/updates)._
+_Email optional. Providing your email as a query param helps us understand usage and impact to keep dynamical.org supported for the long-term. For catalog updates follow [here](https://dynamical.org/updates)._
 
 ## Description
 
