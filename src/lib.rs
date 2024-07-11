@@ -20,9 +20,7 @@ pub struct DataVariable {
     pub units: &'static str,
     pub grib_variable_name: &'static str,
     pub dtype: &'static str,
-    pub value_min: f32,
-    pub value_max: f32,
-    pub value_mean: f32,
+    pub statistics_approximate: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +30,7 @@ pub struct DataDimension {
     pub units: &'static str,
     pub dtype: &'static str,
     pub extra_metadata: HashMap<&'static str, &'static str>,
+    pub statistics_approximate: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +154,7 @@ struct ZarrVariableAttributeMetadata {
     long_name: &'static str,
     units: &'static str,
     grid_mapping: &'static str,
+    statistics_approximate: Value,
 }
 
 #[allow(non_snake_case)]
@@ -163,6 +163,7 @@ struct ZarrDimensionAttributeMetadata {
     _ARRAY_DIMENSIONS: Vec<&'static str>,
     long_name: &'static str,
     units: &'static str,
+    statistics_approximate: Value,
 }
 
 async fn write_array_metadata(
@@ -244,6 +245,7 @@ impl AnalysisRunConfig {
                 long_name: data_variable.long_name,
                 units: data_variable.units,
                 grid_mapping: "spatial_ref",
+                statistics_approximate: data_variable.statistics_approximate,
             };
 
             zmetadata = write_array_metadata(
@@ -293,6 +295,7 @@ impl AnalysisRunConfig {
                 _ARRAY_DIMENSIONS: [data_dimension.name].to_vec(),
                 long_name: data_dimension.long_name,
                 units: data_dimension.units,
+                statistics_approximate: data_dimension.statistics_approximate,
             };
 
             let mut zarr_attribute_metadata_value = to_value(&zarr_attribute_metadata);
@@ -301,24 +304,6 @@ impl AnalysisRunConfig {
             for (key, value) in data_dimension.extra_metadata {
                 zarr_attribute_metadata_with_extra_fields.insert(key.to_string(), json!(value));
             }
-
-            let start = match data_dimension.name {
-                "longitude" => self.dataset.longitude_start.to_string(),
-                "latitude" => self.dataset.latitude_start.to_string(),
-                "time" => self.dataset.time_start.to_string(),
-                &_ => todo!(),
-            };
-            let end = match data_dimension.name {
-                "longitude" => self.dataset.longitude_end.to_string(),
-                "latitude" => self.dataset.latitude_end.to_string(),
-                "time" => self.dataset.time_end.to_string(),
-                &_ => todo!(),
-            };
-
-            zarr_attribute_metadata_with_extra_fields.extend(HashMap::from([
-                ("start".to_string(), to_value(&start)),
-                ("end".to_string(), to_value(&end)),
-            ]));
 
             zmetadata = write_array_metadata(
                 data_dimension.name,

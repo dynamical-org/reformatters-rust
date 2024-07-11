@@ -23,6 +23,7 @@ use ndarray::{s, Array1, Array2, Array3, Axis};
 use once_cell::sync::Lazy;
 use output::Storage;
 use regex::Regex;
+use serde_json::json;
 use tokio::task::spawn_blocking;
 
 const S3_BUCKET_HOST: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
@@ -76,6 +77,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "seconds since 1970-01-01 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
+            statistics_approximate: json!({
+                "min": "2015-01-15 00:00:00 UTC",
+                "mean": "2019-10-08 11:30:00 UTC",
+                "max": "2024-06-30 23:00:00 UTC",
+            }),
         },
         DataDimension {
             name: "latitude",
@@ -83,6 +89,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),
+            statistics_approximate: json!({
+                "min": -90.0,
+                "mean": 0.0,
+                "max": 90.0,
+            }),
         },
         DataDimension {
             name: "longitude",
@@ -90,6 +101,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "decimal degrees",
             dtype: "<f8",
             extra_metadata: HashMap::new(),
+            statistics_approximate: json!({
+                "min": -180.0,
+                "mean": -0.125,
+                "max": 179.75,
+            }),
         },
     ],
     data_variables: vec![
@@ -99,9 +115,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "C",
             dtype: "<f4",
             grib_variable_name: "TMP:2 m above ground",
-            value_min: -79.5,
-            value_mean: 6.041,
-            value_max: 53.25,
+            statistics_approximate: json!({
+                "min": -79.5,
+                "mean": 6.041,
+                "max": 53.25,
+            }),
         },
         DataVariable {
             name: "precipitation_surface",
@@ -109,9 +127,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "kg/(m^2 s)",
             dtype: "<f4",
             grib_variable_name: "PRATE:surface",
-            value_min: 0.0,
-            value_mean: 2.911e-05,
-            value_max: 0.04474,
+            statistics_approximate: json!({
+                "min": 0.0,
+                "mean": 2.911e-05,
+                "max": 0.04474,
+            }),
         },
         DataVariable {
             name: "wind_u_10m",
@@ -119,9 +139,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "m/s",
             dtype: "<f4",
             grib_variable_name: "UGRD:10 m above ground",
-            value_min: -96.88,
-            value_mean: -0.00644,
-            value_max: 87.5,
+            statistics_approximate: json!({
+                "min": -96.88,
+                "mean": -0.00644,
+                "max": 87.5,
+            }),
         },
         DataVariable {
             name: "wind_v_10m",
@@ -129,9 +151,11 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "m/s",
             dtype: "<f4",
             grib_variable_name: "VGRD:10 m above ground",
-            value_min: -87.88,
-            value_mean: 0.1571,
-            value_max: 89.0,
+            statistics_approximate: json!({
+                "min": -87.88,
+                "mean": 0.1571,
+                "max": 89.0,
+            }),
         },
     ],
 });
