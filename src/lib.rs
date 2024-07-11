@@ -360,7 +360,8 @@ impl AnalysisRunConfig {
             "time_domain": format!("{} to {}", self.dataset.time_start, self.dataset.time_end),
             "time_resolution": format!("{} hour", self.dataset.time_step.num_hours()),
             "spatial_domain": self.dataset.spatial_coverage,
-            "spatial_resolution": self.dataset.spatial_resolution
+            "spatial_resolution": self.dataset.spatial_resolution,
+            "coordinates": "time latitude longitude spatial_ref",
         });
 
         zmetadata.insert(".zattrs".to_string(), dataset_zattrs.clone());
@@ -411,6 +412,8 @@ impl AnalysisRunConfig {
             dest_root_path,
         );
 
+        // rioxarray wants a coordinate with a single value called spatial_ref.
+        // All of the coordinate reference system information is stored as attributes on this array
         let spatial_ref_coords_future =
             write_bytes("spatial_ref/0", [0].to_vec(), store.clone(), dest_root_path);
 

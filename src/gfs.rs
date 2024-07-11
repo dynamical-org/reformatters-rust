@@ -77,7 +77,7 @@ pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
             units: "seconds since 1970-01-01 00:00:00",
             dtype: "<i8",
             extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
-            statistics_approximate: json!({
+            statistics_approximate: json!({ // TODO: Make these dynamic?
                 "min": "2015-01-15 00:00:00 UTC",
                 "mean": "2019-10-08 11:30:00 UTC",
                 "max": "2024-06-30 23:00:00 UTC",
