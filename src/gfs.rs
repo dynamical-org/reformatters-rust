@@ -44,15 +44,6 @@ static HOURLY_AWS_FORECAST_START: Lazy<DateTime<Utc>> =
 const INIT_FREQUENCY_HOURS: i64 = 6;
 const EARLY_DATA_FREQUENCY_HOURS: u32 = 3;
 
-static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
-    HashMap::from([
-        ("temperature_2m", "TMP:2 m above ground"),
-        ("precipitation_surface", "PRATE:surface"),
-        ("wind_u_10m", "UGRD:10 m above ground"),
-        ("wind_v_10m", "VGRD:10 m above ground"),
-    ])
-});
-
 /// # Errors
 ///
 /// Currently never returns an error, but it should report errors
@@ -414,7 +405,7 @@ impl DownloadBatch {
                 .into_iter()
                 .map(|time_coordinate| {
                     load_variable_from_file(
-                        self.data_variable_name.as_str(),
+                        &self.run_config.data_variable,
                         time_coordinate,
                         http_client.clone(),
                     )
@@ -520,7 +511,7 @@ fn to_timestamps(times: &[DateTime<Utc>]) -> Array1<E> {
 }
 
 async fn load_variable_from_file(
-    data_variable_name: &str,
+    data_variable: &DataVariable,
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<Array2<E>> {
@@ -541,10 +532,10 @@ async fn load_variable_from_file(
 
         let init_time_str = init_time.format("%Y%m%d%H");
         format!(
-            "{local_data_dir}/{data_variable_name}/gfs.0p25.{init_time_str}.f{lead_time_hour:0>3}.grib2"
+            "{local_data_dir}/{}/gfs.0p25.{init_time_str}.f{lead_time_hour:0>3}.grib2", data_variable.name
         )
     } else {
-        download_band(data_variable_name, time_coordinate, http_client).await?
+        download_band(data_variable, time_coordinate, http_client).await?
     };
 
     let file_path_move = file_path.clone();
@@ -564,7 +555,7 @@ async fn load_variable_from_file(
 }
 
 async fn download_band(
-    data_variable_name: &str,
+    data_variable: &DataVariable,
     time_coordinate: DateTime<Utc>,
     http_client: http::Client,
 ) -> Result<String> {
@@ -597,10 +588,7 @@ async fn download_band(
         .text()
         .await?;
 
-    let index_variable_str = GRIB_INDEX_VARIABLE_NAMES
-        .get(data_variable_name)
-        .unwrap_or_else(|| panic!("missing grib index variable name for {data_variable_name}"));
-
+    let index_variable_str = data_variable.grib_variable_name;
     let byte_offset_regex = Regex::new(&format!(
         r"\d+:(\d+):.+:{index_variable_str}:.+:\n\d+:(\d+)"
     ))
