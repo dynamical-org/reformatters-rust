@@ -44,122 +44,6 @@ static HOURLY_AWS_FORECAST_START: Lazy<DateTime<Utc>> =
 const INIT_FREQUENCY_HOURS: i64 = 6;
 const EARLY_DATA_FREQUENCY_HOURS: u32 = 3;
 
-pub static GFS_DATASET: Lazy<AnalysisDataset> = Lazy::new(|| AnalysisDataset {
-    id: "noaa-gfs-analysis-hourly",
-    name: "NOAA GFS analysis, hourly",
-    description:
-        "Historical weather data from the Global Forecast System (GFS) model operated by NOAA NCEP.",
-    url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
-    spatial_coverage: "Global",
-    spatial_resolution: "0.25 degrees (~20km)",
-    attribution:
-        "NOAA NCEP GFS data processed by dynamical.org from NCAR and NOAA BDP AWS archives.",
-
-    time_start: Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap(),
-    time_end: Utc.with_ymd_and_hms(2024, 7, 1, 0, 0, 0).unwrap(),
-    time_step: TimeDelta::try_hours(1).unwrap(),
-    time_chunk_size: 160,
-
-    longitude_start: -180.,
-    longitude_end: 180.,
-    longitude_step: 0.25,
-    longitude_chunk_size: 144,
-
-    latitude_start: 90.,
-    latitude_end: -90.,
-    latitude_step: 0.25,
-    latitude_chunk_size: 145,
-
-    data_dimensions: vec![
-        DataDimension {
-            name: "time",
-            long_name: "Time",
-            units: "seconds since 1970-01-01 00:00:00",
-            dtype: "<i8",
-            extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
-            statistics_approximate: json!({ // TODO: Make these dynamic?
-                "min": "2015-01-15 00:00:00 UTC",
-                "mean": "2019-10-08 11:30:00 UTC",
-                "max": "2024-06-30 23:00:00 UTC",
-            }),
-        },
-        DataDimension {
-            name: "latitude",
-            long_name: "Latitude",
-            units: "decimal degrees",
-            dtype: "<f8",
-            extra_metadata: HashMap::new(),
-            statistics_approximate: json!({
-                "min": -90.0,
-                "mean": 0.0,
-                "max": 90.0,
-            }),
-        },
-        DataDimension {
-            name: "longitude",
-            long_name: "Longitude",
-            units: "decimal degrees",
-            dtype: "<f8",
-            extra_metadata: HashMap::new(),
-            statistics_approximate: json!({
-                "min": -180.0,
-                "mean": -0.125,
-                "max": 179.75,
-            }),
-        },
-    ],
-    data_variables: vec![
-        DataVariable {
-            name: "temperature_2m",
-            long_name: "Temperature 2 meters above earth surface",
-            units: "C",
-            dtype: "<f4",
-            grib_variable_name: "TMP:2 m above ground",
-            statistics_approximate: json!({
-                "min": -79.5,
-                "mean": 6.041,
-                "max": 53.25,
-            }),
-        },
-        DataVariable {
-            name: "precipitation_surface",
-            long_name: "Precipitation rate at earth surface",
-            units: "kg/(m^2 s)",
-            dtype: "<f4",
-            grib_variable_name: "PRATE:surface",
-            statistics_approximate: json!({
-                "min": 0.0,
-                "mean": 2.911e-05,
-                "max": 0.04474,
-            }),
-        },
-        DataVariable {
-            name: "wind_u_10m",
-            long_name: "Wind speed u-component 10 meters above earth surface",
-            units: "m/s",
-            dtype: "<f4",
-            grib_variable_name: "UGRD:10 m above ground",
-            statistics_approximate: json!({
-                "min": -96.88,
-                "mean": -0.00644,
-                "max": 87.5,
-            }),
-        },
-        DataVariable {
-            name: "wind_v_10m",
-            long_name: "Wind speed v-component 10 meters above earth surface",
-            units: "m/s",
-            dtype: "<f4",
-            grib_variable_name: "VGRD:10 m above ground",
-            statistics_approximate: json!({
-                "min": -87.88,
-                "mean": 0.1571,
-                "max": 89.0,
-            }),
-        },
-    ],
-});
-
 static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     HashMap::from([
         ("temperature_2m", "TMP:2 m above ground"),
@@ -174,14 +58,17 @@ static GRIB_INDEX_VARIABLE_NAMES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 /// Currently never returns an error, but it should report errors
 pub async fn reformat(
     data_variable_name: String,
-    time_start: DateTime<Utc>,
-    time_end: DateTime<Utc>,
+    ingest_start: DateTime<Utc>,
+    ingest_end: DateTime<Utc>,
+    dataset_end: DateTime<Utc>,
     destination: String,
     skip_metadata: bool,
 ) -> Result<()> {
     let start = Instant::now();
 
-    let run_config = get_run_config(&GFS_DATASET, &data_variable_name, time_start, time_end)?;
+    let gfs_dataset = get_dataset(dataset_end);
+
+    let run_config = get_run_config(&gfs_dataset, &data_variable_name, ingest_start, ingest_end)?;
 
     let download_batches = run_config.get_download_batches()?;
 
@@ -269,6 +156,127 @@ pub struct ZarrChunkUploadInfo {
     object_version: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
+fn get_dataset(dataset_max_date: DateTime<Utc>) -> AnalysisDataset {
+    let dataset_min_date = Utc.with_ymd_and_hms(2015, 1, 15, 0, 0, 0).unwrap();
+    let dataset_mean_date = dataset_min_date + ((dataset_max_date  - dataset_min_date) / 2);
+    AnalysisDataset {
+        id: "noaa-gfs-analysis-hourly",
+        name: "NOAA GFS analysis, hourly",
+        description:
+            "Historical weather data from the Global Forecast System (GFS) model operated by NOAA NCEP.",
+        url: "https://data.dynamical.org/noaa/gfs/analysis-hourly/latest.zarr",
+        spatial_coverage: "Global",
+        spatial_resolution: "0.25 degrees (~20km)",
+        attribution:
+            "NOAA NCEP GFS data processed by dynamical.org from NCAR and NOAA BDP AWS archives.",
+    
+        time_start: dataset_min_date,
+        time_end: dataset_max_date,
+        time_step: TimeDelta::try_hours(1).unwrap(),
+        time_chunk_size: 160,
+    
+        longitude_start: -180.,
+        longitude_end: 180.,
+        longitude_step: 0.25,
+        longitude_chunk_size: 144,
+    
+        latitude_start: 90.,
+        latitude_end: -90.,
+        latitude_step: 0.25,
+        latitude_chunk_size: 145,
+    
+        data_dimensions: vec![
+            DataDimension {
+                name: "time",
+                long_name: "Time",
+                units: "seconds since 1970-01-01 00:00:00",
+                dtype: "<i8",
+                extra_metadata: HashMap::from([("calendar", "proleptic_gregorian")]),
+                statistics_approximate: json!({
+                    "min": dataset_min_date.to_string(),
+                    "mean": dataset_mean_date.to_string(),
+                    "max": dataset_max_date.to_string(),
+                }),
+            },
+            DataDimension {
+                name: "latitude",
+                long_name: "Latitude",
+                units: "decimal degrees",
+                dtype: "<f8",
+                extra_metadata: HashMap::new(),
+                statistics_approximate: json!({
+                    "min": -90.0,
+                    "mean": 0.0,
+                    "max": 90.0,
+                }),
+            },
+            DataDimension {
+                name: "longitude",
+                long_name: "Longitude",
+                units: "decimal degrees",
+                dtype: "<f8",
+                extra_metadata: HashMap::new(),
+                statistics_approximate: json!({
+                    "min": -180.0,
+                    "mean": -0.125,
+                    "max": 179.75,
+                }),
+            },
+        ],
+        data_variables: vec![
+            DataVariable {
+                name: "temperature_2m",
+                long_name: "Temperature 2 meters above earth surface",
+                units: "C",
+                dtype: "<f4",
+                grib_variable_name: "TMP:2 m above ground",
+                statistics_approximate: json!({
+                    "min": -79.5,
+                    "mean": 6.041,
+                    "max": 53.25,
+                }),
+            },
+            DataVariable {
+                name: "precipitation_surface",
+                long_name: "Precipitation rate at earth surface",
+                units: "kg/(m^2 s)",
+                dtype: "<f4",
+                grib_variable_name: "PRATE:surface",
+                statistics_approximate: json!({
+                    "min": 0.0,
+                    "mean": 2.911e-05,
+                    "max": 0.04474,
+                }),
+            },
+            DataVariable {
+                name: "wind_u_10m",
+                long_name: "Wind speed u-component 10 meters above earth surface",
+                units: "m/s",
+                dtype: "<f4",
+                grib_variable_name: "UGRD:10 m above ground",
+                statistics_approximate: json!({
+                    "min": -96.88,
+                    "mean": -0.00644,
+                    "max": 87.5,
+                }),
+            },
+            DataVariable {
+                name: "wind_v_10m",
+                long_name: "Wind speed v-component 10 meters above earth surface",
+                units: "m/s",
+                dtype: "<f4",
+                grib_variable_name: "VGRD:10 m above ground",
+                statistics_approximate: json!({
+                    "min": -87.88,
+                    "mean": 0.1571,
+                    "max": 89.0,
+                }),
+            },
+        ],
+    }
+}
+
 fn get_run_config(
     dataset: &AnalysisDataset,
     data_variable_name: &str,
@@ -301,7 +309,7 @@ fn get_run_config(
     let time_coordinates = (0..u32::MAX)
         .scan(dataset.time_start - dataset.time_step, |time, _| {
             *time += dataset.time_step;
-            if *time < dataset.time_end {
+            if *time <= dataset.time_end {
                 Some(*time)
             } else {
                 None
@@ -375,9 +383,9 @@ impl AnalysisRunConfig {
                 // or the download_batch_end_date is between the run_config's start and end date
                 // then this is a download batch that we want to process
                 (download_batch_start_date >= &self.time_start
-                    && download_batch_start_date < &self.time_end)
+                    && download_batch_start_date <= &self.time_end)
                     || (download_batch_end_date >= &self.time_start
-                        && download_batch_end_date < &self.time_end)
+                        && download_batch_end_date <= &self.time_end)
             })
             .collect())
     }
