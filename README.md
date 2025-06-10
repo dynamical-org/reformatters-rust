@@ -1,3 +1,5 @@
+# Superceeded by https://github.com/dynamical-org/reformatters/
+
 # Reformatters
 
 Reformatting code to create dynamical.org zarr archives from source weather and climate datasets.
